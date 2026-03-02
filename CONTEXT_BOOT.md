@@ -19,6 +19,10 @@ When user intent matches keywords, load corresponding context file first:
 - Keywords: `routine`, `lifestyle`, `health`, `productivity`
 - Load: `context/personal-assistant.md`
 
+4) iPhone build/deploy
+- Keywords: `cài lên iphone`, `build ios`, `deploy iphone`, `install app iphone`
+- Load: `context/iphone-deploy.md`
+
 ## Default behavior
 - If unclear intent: ask 1 clarifying question, then load the nearest context file.
 - Keep this file minimal; put details inside `context/*.md`.
