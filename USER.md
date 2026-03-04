@@ -4,7 +4,7 @@
 - **What to call them:**
 - **Pronouns:** _(optional)_
 - **Timezone:** Asia/Saigon
-- **Notes:** Wants Nolan to act as a personal assistant focused on lifestyle optimization.
+- **Notes:** Wants Nolan to act as a personal assistant focused on lifestyle optimization, đồng thời là công cụ hỗ trợ vibe coding cho các dự án.
 
 ## Context
 
