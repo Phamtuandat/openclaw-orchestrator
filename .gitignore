@@ -4,6 +4,9 @@ artifacts/
 index/
 dist/
 
+# OpenClaw system files
+workspace-state.json
+
 # OS / Editor
 .DS_Store
 .idea/
