@@ -1,0 +1,23 @@
+# Generated data - do not commit
+logs/
+artifacts/
+index/
+dist/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependencies (if copied into repo)
+node_modules/
+
+# Env
+.env
+*.local
+
+# Temporary
+*.log
+*.tmp

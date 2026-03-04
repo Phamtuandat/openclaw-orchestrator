@@ -1,0 +1,150 @@
+{
+  "id": "crash_hunter",
+  "name": "Crash Hunter",
+  "description": "Detect potential crash risks and stability issues in SwiftUI projects without modifying code",
+  "version": "1.0.0",
+  "tags": ["safety", "analysis", "swiftui"],
+  
+  "inputs": {
+    "required": ["project_path"],
+    "optional": ["scope", "exclude_patterns", "max_files_per_agent"],
+    "schema": {
+      "type": "object",
+      "properties": {
+        "project_path": {
+          "type": "string",
+          "description": "Absolute path to SwiftUI project root"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["all", "views", "viewmodels", "services", "tests"],
+          "default": "all"
+        },
+        "exclude_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [".build", "DerivedData", "Pods"]
+        },
+        "max_files_per_agent": {
+          "type": "number",
+          "minimum": 1,
+          "default": 50
+        }
+      }
+    }
+  },
+  
+  "stages": [
+    {
+      "id": "codebase_scan",
+      "agentId": "orchestrator-main",
+      "task": "Scan repository structure and classify files by type (ViewModel, View, Service, Test). Build file index.",
+      "dependsOn": [],
+      "parallel": false,
+      "outputs": ["file_classification", "file_index"]
+    },
+    {
+      "id": "logic_scan",
+      "agentId": "logic-agent",
+      "task": "Scan ViewModels and services for crash risks: force unwraps (!), unsafe optional handling, missing error handling, async race conditions, data races. Provide line numbers and fixes.",
+      "dependsOn": ["codebase_scan"],
+      "parallel": true,
+      "targets": {
+        "file_patterns": [
+          "**/*Store.swift",
+          "**/*ViewModel.swift",
+          "**/*Repository.swift",
+          "**/*Service.swift",
+          "**/Services/*.swift"
+        ]
+      },
+      "timeout_seconds": 600,
+      "outputs": ["logic_findings"]
+    },
+    {
+      "id": "ui_scan",
+      "agentId": "ui-agent",
+      "task": "Scan SwiftUI Views for invalid patterns: invalid state bindings, duplicated state sources, uncontrolled .task usage, navigation state inconsistencies, business logic in View bodies.",
+      "dependsOn": ["codebase_scan"],
+      "parallel": true,
+      "targets": {
+        "file_patterns": [
+          "**/*View.swift",
+          "**/Features/**/*.swift"
+        ]
+      },
+      "timeout_seconds": 600,
+      "outputs": ["ui_findings"]
+    },
+    {
+      "id": "safety_audit",
+      "agentId": "safety-review-agent",
+      "task": "Audit entire codebase for: MainActor violations, UI updates from background threads, potential memory leaks (retain cycles), unsafe async patterns, @State misuse, forced unwraps in critical paths.",
+      "dependsOn": ["codebase_scan"],
+      "parallel": true,
+      "timeout_seconds": 600,
+      "outputs": ["safety_findings"]
+    },
+    {
+      "id": "test_coverage",
+      "agentId": "test-agent",
+      "task": "Inspect test coverage: identify missing tests for critical ViewModels, missing UI tests for key flows, and assess overall test quality. If test files exist, analyze gaps.",
+      "dependsOn": ["codebase_scan"],
+      "parallel": true,
+      "targets": {
+        "file_patterns": [
+          "**/*Tests*.swift",
+          "**/*Spec*.swift",
+          "**/Tests/**/*.swift"
+        ]
+      },
+      "timeout_seconds": 300,
+      "outputs": ["test_gaps"]
+    },
+    {
+      "id": "aggregate_findings",
+      "agentId": "orchestrator-main",
+      "task": "Aggregate all findings from logic, ui, safety, and test agents. Classify by severity (critical, high, medium, low). Generate prioritized remediation task list with affected files and recommended fixes.",
+      "dependsOn": ["logic_scan", "ui_scan", "safety_audit", "test_coverage"],
+      "parallel": false,
+      "outputs": ["final_report"]
+    }
+  ],
+  
+  "safety_gates": [
+    {
+      "name": "no_file_modifications",
+      "check": {
+        "type": "function",
+        "function": "verifyNoFileChanges"
+      },
+      "blockOnFailure": true,
+      "description": "Ensure analysis-only mode did not modify any files"
+    },
+    {
+      "name": "all_agents_completed",
+      "check": {
+        "type": "function",
+        "function": "verifyAllStagesCompleted"
+      },
+      "blockOnFailure": false,
+      "description": "Warn if any agent stage failed"
+    }
+  ],
+  
+  "max_parallel": 4,
+  "timeout_minutes": 30,
+  
+  "retry_policy": {
+    "max_retries": 2,
+    "backoff": "exponential",
+    "fallback_models": ["openrouter/deepseek/deepseek-coder-v2-lite-instruct:free"],
+    "retry_on": ["timeout", "rate_limit", "model_error"]
+  },
+  
+  "on_complete": {
+    "notify": true,
+    "persist_results": true,
+    "generate_trace": true
+  }
+}
