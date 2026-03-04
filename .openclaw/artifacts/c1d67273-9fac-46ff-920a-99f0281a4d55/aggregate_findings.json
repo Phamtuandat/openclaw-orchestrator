@@ -1,0 +1,13 @@
+{
+  "stageId": "aggregate_findings",
+  "agentId": "orchestrator-main",
+  "status": "completed",
+  "output": {
+    "message": "Mock result",
+    "model": "openrouter/stepfun/step-3.5-flash:free",
+    "traceId": "c1d67273-9fac-46ff-920a-99f0281a4d55"
+  },
+  "durationMs": 51,
+  "attempt": 1,
+  "modelUsed": "openrouter/stepfun/step-3.5-flash:free"
+}
