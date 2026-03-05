@@ -15,7 +15,7 @@ npm run build
 node dist/dashboard.js
 
 # 3. Open in browser
-http://localhost:3000
+http://localhost:3001
 ```
 
 ---
@@ -79,7 +79,7 @@ USE_REAL_AGENT=true node dist/index.js crash_hunter project_path="/Volumes/Home_
 
 ## 🔧 Configuration
 
-Dashboard runs on port `3000` by default. Change in code if needed.
+Dashboard runs on port `3001` by default. Change in code if needed.
 
 ---
 

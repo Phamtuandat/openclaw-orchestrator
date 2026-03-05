@@ -1,0 +1,34 @@
+{
+  "agents": {
+    "list": [
+      {
+        "id": "logic-agent",
+        "model": {
+          "primary": "qwen/qwen3-coder:free",
+          "fallbacks": ["stepfun/step-3.5-flash:free"]
+        }
+      },
+      {
+        "id": "ui-agent",
+        "model": {
+          "primary": "qwen/qwen3-coder:free",
+          "fallbacks": ["stepfun/step-3.5-flash:free"]
+        }
+      },
+      {
+        "id": "test-agent",
+        "model": {
+          "primary": "qwen/qwen3-coder:free",
+          "fallbacks": ["stepfun/step-3.5-flash:free"]
+        }
+      },
+      {
+        "id": "safety-review-agent",
+        "model": {
+          "primary": "qwen/qwen3-coder:free",
+          "fallbacks": ["stepfun/step-3.5-flash:free"]
+        }
+      }
+    ]
+  }
+}

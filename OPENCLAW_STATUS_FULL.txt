@@ -1,0 +1,134 @@
+OpenClaw status --all
+
+Overview
+┌─────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Item            │ Value                                                                                             │
+├─────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Version         │ 2026.3.2                                                                                          │
+│ OS              │ macos 26.3 (arm64)                                                                                │
+│ Node            │ 24.9.0                                                                                            │
+│ Config          │ ~/.openclaw/openclaw.json                                                                         │
+│ Dashboard       │ http://127.0.0.1:18789/                                                                           │
+│ Tailscale       │ off · Running · ats-mac-mini.tail60fb71.ts.net                                                    │
+│ Channel         │ stable (default)                                                                                  │
+│ Update          │ pnpm · npm latest 2026.3.2                                                                        │
+│ Gateway         │ local · ws://127.0.0.1:18789 (local loopback) · reachable 24ms · auth token                       │
+│ Security        │ Run: openclaw security audit --deep                                                               │
+│ Gateway self    │ ats-Mac-mini.local (192.168.0.100) app 2026.3.2 macos 26.3                                        │
+│ Gateway service │ LaunchAgent installed · loaded · running (pid 46582)                                              │
+│ Node service    │ LaunchAgent not installed                                                                         │
+│ Agents          │ 5 total · 0 bootstrapping · 1 active · 4 sessions                                                 │
+└─────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Channels
+┌──────────┬─────────┬────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+│ Channel  │ Enabled │ State  │ Detail                                                                                │
+├──────────┼─────────┼────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ Telegram │ ON      │ OK     │ token config (sha256:ec28b7c0 · len 46) · accounts 1/1                                │
+│ WhatsApp │ ON      │ OK     │ linked · +84399605617 · auth 1m ago · accounts 1                                      │
+└──────────┴─────────┴────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+Telegram accounts
+┌──────────┬──────────┬───────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Account  │ Status   │ Notes                                                                                         │
+├──────────┼──────────┼───────────────────────────────────────────────────────────────────────────────────────────────┤
+│ default  │ OK       │ token:config · allow:1283361952                                                               │
+└──────────┴──────────┴───────────────────────────────────────────────────────────────────────────────────────────────┘
+
+WhatsApp accounts
+┌──────────┬──────────┬───────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Account  │ Status   │ Notes                                                                                         │
+├──────────┼──────────┼───────────────────────────────────────────────────────────────────────────────────────────────┤
+│ default  │ OK       │ dm:allowlist · allow:+84399605617                                                             │
+└──────────┴──────────┴───────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Agents
+┌───────────────────────────────────────────┬────────────────┬──────────┬──────────┬──────────────────────────────────┐
+│ Agent                                     │ Bootstrap file │ Sessions │ Active   │ Store                            │
+├───────────────────────────────────────────┼────────────────┼──────────┼──────────┼──────────────────────────────────┤
+│ orchestrator-main (Orchestrator)          │ ABSENT         │        4 │ just now │ ~/.openclaw/agents/orchestrator- │
+│                                           │                │          │          │ main/sessions/sessions.json      │
+│ logic-agent (Logic Agent)                 │ ABSENT         │        0 │ unknown  │ ~/.openclaw/agents/logic-agent/  │
+│                                           │                │          │          │ sessions/sessions.json           │
+│ safety-review-agent (Safety Review Agent) │ ABSENT         │        0 │ unknown  │ ~/.openclaw/agents/safety-       │
+│                                           │                │          │          │ review-agent/sessions/sessions.  │
+│                                           │                │          │          │ json                             │
+│ test-agent (Test Agent)                   │ ABSENT         │        0 │ unknown  │ ~/.openclaw/agents/test-agent/   │
+│                                           │                │          │          │ sessions/sessions.json           │
+│ ui-agent (UI Agent)                       │ ABSENT         │        0 │ unknown  │ ~/.openclaw/agents/ui-agent/     │
+│                                           │                │          │          │ sessions/sessions.json           │
+└───────────────────────────────────────────┴────────────────┴──────────┴──────────┴──────────────────────────────────┘
+
+Diagnosis (read-only)
+
+Gateway connection details:
+  Gateway target: ws://127.0.0.1:18789
+  Source: local loopback
+  Config: /Users/datpham/.openclaw/openclaw.json
+  Bind: loopback
+
+✓ Config: /Users/datpham/.openclaw/openclaw.json
+✓ Restart sentinel: none
+
+Gateway last log line:
+  2026-03-05T02:03:37.425+07:00 Gateway start blocked: set gateway.mode=local (current: unset) or pass --allow-unconfigured.
+! Port 18789
+  Port 18789 is already in use.
+  - pid 46582 datpham: openclaw-gateway (127.0.0.1:18789)
+  - Gateway already running locally. Stop it (openclaw gateway stop) or use a different port.
+✓ Tailscale: off · Running · ats-mac-mini.tail60fb71.ts.net
+  ips: 100.120.5.97, fd7a:115c:a1e0::b532:561
+✓ Skills: 7 eligible · 0 missing · /Users/datpham/.openclaw/workspace
+
+Gateway logs (tail, summarized): /Users/datpham/.openclaw/logs
+  # stderr: /Users/datpham/.openclaw/logs/gateway.err.log
+  2026-03-05T02:03:32.477+07:00 Gateway start blocked: set gateway.mode=local (current: unset) or pass --allow-unconfigured.
+  2026-03-05T02:03:32.483+07:00 Config write audit: /Users/datpham/.openclaw/logs/config-audit.jsonl
+  2026-03-05T02:03:34.504+07:00 Gateway start blocked: set gateway.mode=local (current: unset) or pass --allow-unconfigured.
+  2026-03-05T02:03:34.510+07:00 Config write audit: /Users/datpham/.openclaw/logs/config-audit.jsonl
+  2026-03-05T02:03:35.444+07:00 Gateway start blocked: set gateway.mode=local (current: unset) or pass --allow-unconfigured.
+  2026-03-05T02:03:35.450+07:00 Config write audit: /Users/datpham/.openclaw/logs/config-audit.jsonl
+  … 17 lines omitted …
+  2026-03-05T01:50:26.330Z [agent/embedded] read tool called without path: toolCallId=call_278995039752473ab78695ae|fc_tmp_kjexrxe0j1 argsType=object
+  2026-03-05T08:50:26.333+07:00 [tools] read failed: Missing required parameter: path (path or file_path). Supply correct parameters before retrying.
+  2026-03-05T08:50:32.091+07:00 [tools] read failed: ENOENT: no such file or directory, access '/Users/datpham/.openclaw/workspace/.openclaw/config.json'
+  2026-03-05T08:50:40.565+07:00 [tools] session_status failed: Unknown sessionId: web-api-dat-u-1772675414863-dtpt9j
+  2026-03-05T08:56:45.409+07:00 [tools] session_status failed: Unknown sessionId: orchestrator-main
+  2026-03-05T08:57:54.603+07:00 [tools] session_status failed: Unknown sessionId: web-api-dat-u-1772675869050-dzoafh
+  2026-03-05T09:03:55.807+07:00 [tools] read failed: ENOENT: no such file or directory, access '/Users/datpham/.openclaw/workspace/openclaw.json'
+  2026-03-05T09:09:00.879+07:00 [tools] read failed: ENOENT: no such file or directory, access '/Users/datpham/.openclaw/workspace/skills/orchestrator.json'
+  2026-03-05T09:09:05.115+07:00 [tools] read failed: ENOENT: no such file or directory, access '/Users/datpham/.openclaw/workspace/skills'
+  2026-03-05T09:09:08.193+07:00 [tools] read failed: EISDIR: illegal operation on a directory, read
+  2026-03-05T09:12:06.979+07:00 [tools] read failed: ENOENT: no such file or directory, access '/Users/datpham/.openclaw/workspace/skills/orchestrator.json'
+  2026-03-05T02:12:33.224Z [diagnostic] lane wait exceeded: lane=session:web-api-dat waitedMs=14157 queueAhead=0
+  2026-03-05T09:32:23.994+07:00 [tools] edit failed: Could not find the exact text in /Users/datpham/.openclaw/workspace/.openclaw/core/orchestrator.ts. The old text must match exactly including all whitespace and newlines.
+  2026-03-05T09:33:03.593+07:00 [tools] edit failed: Missing required parameters: oldText (oldText or old_string), newText (newText or new_string). Supply correct parameters before retrying.
+  2026-03-05T02:40:44.313Z [gateway] full process restart failed (spawnSync launchctl ETIMEDOUT); falling back to in-process restart
+  # stdout: /Users/datpham/.openclaw/logs/gateway.log
+  Hệ thống hiện tại ổn định và có thể chạy multi-agent workflow orchestration.
+  2026-03-05T02:38:59.514Z [health-monitor] [telegram:default] health-monitor: restarting (reason: stale-socket)
+  2026-03-05T02:38:59.520Z [health-monitor] [whatsapp:default] health-monitor: restarting (reason: stale-socket)
+  2026-03-05T02:38:59.526Z [whatsapp] [default] starting provider (+84399605617)
+  2026-03-05T02:39:00.982Z [telegram] [default] starting provider (@Nolan_Pham_bot)
+  2026-03-05T02:39:01.474Z [whatsapp] Listening for personal WhatsApp inbound messages.
+  … 17 lines omitted …
+  2026-03-05T02:40:45.298Z [telegram] [default] starting provider (@Nolan_Pham_bot)
+  2026-03-05T02:40:48.869Z [canvas] host mounted at http://127.0.0.1:18789/__openclaw__/canvas/ (root /Users/datpham/.openclaw/canvas)
+  2026-03-05T02:40:48.914Z [heartbeat] started
+  2026-03-05T02:40:48.916Z [health-monitor] started (interval: 300s, startup-grace: 60s, channel-connect-grace: 120s)
+  2026-03-05T02:40:48.917Z [gateway] agent model: openrouter/stepfun/step-3.5-flash:free
+  2026-03-05T02:40:48.918Z [gateway] listening on ws://127.0.0.1:18789, ws://[::1]:18789 (PID 46582)
+  2026-03-05T02:40:48.919Z [gateway] log file: /tmp/openclaw/openclaw-2026-03-05.log
+  2026-03-05T02:40:48.935Z [browser/server] Browser control listening on http://127.0.0.1:18791/ (auth=token)
+  2026-03-05T02:40:48.938Z [whatsapp] [default] starting provider (+84399605617)
+  2026-03-05T02:40:50.020Z [telegram] [default] starting provider (@Nolan_Pham_bot)
+  2026-03-05T02:40:50.030Z [telegram] autoSelectFamily=true (default-node22)
+  2026-03-05T02:40:50.033Z [telegram] dnsResultOrder=ipv4first (default-node22)
+  2026-03-05T02:40:50.335Z [whatsapp] Listening for personal WhatsApp inbound messages.
+  2026-03-05T02:42:15.102Z [ws] ⇄ res ✓ config.get 339ms conn=0834949b…e447 id=e1598330…3933
+  2026-03-05T02:42:15.107Z [ws] ⇄ res ✓ status 344ms conn=0834949b…e447 id=6c9e9140…a62d
+✓ Channel issues (none)
+
+Pasteable debug report. Auth tokens redacted.
+Troubleshooting: https://docs.openclaw.ai/troubleshooting
+

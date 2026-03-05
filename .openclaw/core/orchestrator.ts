@@ -1,10 +1,12 @@
-import { readdirSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'fs';
+import { readdirSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { promises as fs } from 'fs';
 import { startWorkflowTrace } from './workflow_tracer';
 import { orchestratorLogger } from './logger';
 import { FileIndex, getOrBuildFileIndex } from './file_index_builder';
 import { getAgentDispatcher } from './agent_dispatcher';
 import { DependencyGraphBuilder } from './dependency_graph_builder';
+import * as glob from 'glob';
 
 // Types
 interface WorkflowDefinition {
@@ -74,15 +76,20 @@ export class Orchestrator {
 
   private loadAllWorkflows(): void {
     try {
-      if (!existsSync(this.workflowsDir)) return;
+      this.logger.info(`[orchestrator] Loading workflows from: ${this.workflowsDir}`);
+      if (!existsSync(this.workflowsDir)) {
+        this.logger.warn(`[orchestrator] Workflows directory does not exist: ${this.workflowsDir}`);
+        return;
+      }
       const files = readdirSync(this.workflowsDir).filter(f => f.endsWith('.json'));
+      this.logger.info(`[orchestrator] Found ${files.length} workflow file(s)`);
       for (const file of files) {
         const path = join(this.workflowsDir, file);
         try {
           const content = readFileSync(path, 'utf8');
           const wf = JSON.parse(content) as WorkflowDefinition;
           this.loadedWorkflows.set(wf.id, wf);
-          this.logger.info(`Loaded workflow: ${wf.id} (${wf.stages.length} stages)`);
+          this.logger.info(`[orchestrator] Loaded workflow: ${wf.id} (${wf.stages.length} stages)`);
         } catch (err) {
           this.logger.error(`Failed to load ${file}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -109,34 +116,54 @@ export class Orchestrator {
     const traceId = tracer.getTraceId()!;
     context.traceId = traceId;
 
+    // Overall deadline based on workflow timeout
+    const deadline = Date.now() + workflow.timeout_minutes * 60 * 1000;
+
     try {
       // Build file index & dependency graph if needed
       if (!context.fileIndex && context.inputs.project_path) {
-        this.logger.info('Building file index...');
+        this.logger.info(`[trace:${traceId}] Building file index...`);
         context.fileIndex = await getOrBuildFileIndex(context.inputs.project_path);
       }
       if (!context.dependencyGraph && context.fileIndex) {
-        this.logger.info('Building dependency graph...');
+        this.logger.info(`[trace:${traceId}] Building dependency graph...`);
         const builder = new (await import('./dependency_graph_builder')).DependencyGraphBuilder(context.fileIndex);
         context.dependencyGraph = await builder.build();
         this.conflictGraph = context.dependencyGraph;
       }
 
-      // Plan execution
+      // Plan execution with validation
       const plan = this.planExecution(workflow);
+      this.logger.info(`[trace:${traceId}] Execution plan prepared with ${plan.length} stages`);
+
+      // Execute stages sequentially, respecting file conflicts and deadlines
       const results: TaskResult[] = [];
 
-      // Execute stages
       for (const stage of plan) {
-        await this.waitIfConflicted(stage, context.fileIndex);
-        const filesTouched = this.collectFileIntents(stage, context.fileIndex);
-        this.registerFileIntent(stage.id, stage.agentId, filesTouched);
-        const result = await this.executeStage(stage, context, tracer);
-        results.push(result);
-        this.clearFileIntents(stage.id);
+        // Check overall deadline before starting stage
+        if (Date.now() > deadline) {
+          throw new Error('WORKFLOW_TIMEOUT');
+        }
 
-        if (result.status === 'failed' && this.isCriticalFailure(result)) {
-          this.logger.error(`Critical stage failed, aborting: ${stage.id}`);
+        // Validate stage (defensive)
+        if (!stage.agentId) {
+          throw new Error(`Stage ${stage.id} missing required agentId`);
+        }
+
+        let stageResult: TaskResult | null = null;
+        try {
+          await this.waitIfConflicted(stage, context.fileIndex, deadline);
+          const filesTouched = this.collectFileIntents(stage, context.fileIndex);
+          this.registerFileIntent(stage.id, stage.agentId, filesTouched);
+          stageResult = await this.executeStage(stage, context, tracer, deadline);
+          results.push(stageResult);
+        } finally {
+          // Guaranteed cleanup: remove in-flight session and file intents
+          this.removeInFlightSession(stage.id);
+        }
+
+        if (stageResult && stageResult.status === 'failed' && this.isCriticalFailure(stageResult)) {
+          this.logger.error(`[trace:${traceId}] Critical stage failed, aborting: ${stage.id}`);
           break;
         }
       }
@@ -163,31 +190,64 @@ export class Orchestrator {
     }
   }
 
-  private planExecution(workflow: WorkflowDefinition): any[] {
-    const stageMap = new Map(workflow.stages.map(s => [s.id, s]));
+  private planExecution(workflow: WorkflowDefinition): Array<{ id: string; agentId: string; task: string; targets?: any; timeout_seconds?: number; parallel?: boolean }> {
+    const stageMap = new Map<string, typeof workflow.stages[0]>();
+    for (const s of workflow.stages) {
+      stageMap.set(s.id, s);
+    }
+
+    // Validate dependencies
+    for (const stage of workflow.stages) {
+      if (stage.dependsOn) {
+        for (const dep of stage.dependsOn) {
+          if (!stageMap.has(dep)) {
+            throw new Error(`Stage ${stage.id} depends on non-existent stage: ${dep}`);
+          }
+        }
+      }
+    }
+
     const inDegree = new Map<string, number>();
     for (const stage of workflow.stages) {
       inDegree.set(stage.id, stage.dependsOn?.length || 0);
     }
+
     const queue: string[] = [];
     for (const [id, deg] of inDegree.entries()) if (deg === 0) queue.push(id);
 
-    const order: any[] = [];
+    const order: Array<{ id: string; agentId: string; task: string; targets?: any; timeout_seconds?: number; parallel?: boolean }> = [];
+    let processed = 0;
     while (queue.length > 0) {
       const cur = queue.shift()!;
       const stage = stageMap.get(cur)!;
-      order.push({ ...stage, agentId: stage.agentId, task: stage.task });
+      order.push({
+        id: stage.id,
+        agentId: stage.agentId,
+        task: stage.task,
+        targets: stage.targets,
+        timeout_seconds: stage.timeout_seconds,
+        parallel: stage.parallel,
+      });
+      processed++;
+
       for (const other of workflow.stages) {
         if (other.dependsOn?.includes(cur)) {
-          inDegree.set(other.id, (inDegree.get(other.id) || 0) - 1);
-          if (inDegree.get(other.id) === 0) queue.push(other.id);
+          const newDeg = (inDegree.get(other.id) || 0) - 1;
+          inDegree.set(other.id, newDeg);
+          if (newDeg === 0) queue.push(other.id);
         }
       }
     }
+
+    if (processed !== workflow.stages.length) {
+      const remaining = workflow.stages.filter(s => !order.find(o => o.id === s.id)).map(s => s.id);
+      throw new Error(`Cyclic dependency detected involving stages: ${remaining.join(', ')}`);
+    }
+
     return order;
   }
 
-  private async waitIfConflicted(stage: any, fileIndex?: any): Promise<void> {
+  private async waitIfConflicted(stage: any, fileIndex?: any, deadline: number = Infinity): Promise<void> {
     const filesTouched = this.collectFileIntents(stage, fileIndex);
     const conflictingStageIds = new Set<string>();
 
@@ -200,21 +260,80 @@ export class Orchestrator {
 
     if (conflictingStageIds.size > 0) {
       this.logger.warn(`Stage ${stage.id} waiting for conflicts with: ${Array.from(conflictingStageIds).join(', ')}`);
-      while (true) {
+      const startWait = Date.now();
+      let lastLog = startWait;
+
+      while (Date.now() < deadline) {
         const stillConflicting = Array.from(conflictingStageIds).some(sid => this.inFlightSessions.has(sid));
         if (!stillConflicting) break;
+
+        // Log progress every 5 seconds
+        if (Date.now() - lastLog > 5000) {
+          this.logger.info(`Stage ${stage.id} still waiting... (elapsed ${Date.now() - startWait}ms)`);
+          lastLog = Date.now();
+        }
+
         await new Promise(r => setTimeout(r, 500));
       }
+
+      if (Date.now() >= deadline) {
+        throw new Error('CONFLICT_WAIT_TIMEOUT');
+      }
+
+      this.logger.info(`Stage ${stage.id} conflict resolved after ${Date.now() - startWait}ms`);
     }
   }
 
   private collectFileIntents(stage: any, fileIndex?: any): string[] {
-    if (!stage.targets?.file_patterns) return [`stage-${stage.id}`];
-    const files: string[] = [];
-    for (const pattern of stage.targets.file_patterns) {
-      files.push(`pattern:${pattern}`);
+    if (!stage.targets?.file_patterns) {
+      return [`stage-${stage.id}`];
     }
-    return files;
+
+    if (!fileIndex || !fileIndex.files) {
+      // Without file index, we can't resolve patterns to real files
+      // Return pattern keys to at least track conflicts by pattern
+      return stage.targets.file_patterns.map(p => `pattern:${p}`);
+    }
+
+    const allFiles = Object.keys(fileIndex.files);
+    const includePatterns = stage.targets.file_patterns;
+    const excludePatterns = stage.targets.exclude_patterns || [];
+
+    let matchedFiles = allFiles.filter(filePath => {
+      return includePatterns.some(pattern => this.matchesGlob(filePath, pattern));
+    });
+
+    if (excludePatterns.length > 0) {
+      matchedFiles = matchedFiles.filter(filePath => {
+        return !excludePatterns.some(pattern => this.matchesGlob(filePath, pattern));
+      });
+    }
+
+    return matchedFiles;
+  }
+
+  private matchesGlob(filePath: string, pattern: string): boolean {
+    // Convert glob pattern to regex (simple implementation)
+    const cleanPath = filePath.split('/').filter(Boolean).join('/');
+    const cleanPattern = pattern.split('/').filter(Boolean).join('/');
+
+    const escaped = cleanPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    let regexStr = escaped
+      .replace(/\\\*\*/g, '**')
+      .replace(/\\\*/g, '[^/]*')
+      .replace(/\\\?/g, '[^/]');
+
+    if (regexStr.startsWith('**')) {
+      regexStr = '(?:.*/)?' + regexStr.slice(2);
+    }
+    if (regexStr.endsWith('**')) {
+      regexStr = regexStr.slice(0, -2) + '(?:.*/)?';
+    }
+    regexStr = regexStr.replace(/\*\*/g, '(?:.*/)?');
+
+    regexStr = '^' + regexStr + '$';
+    const regex = new RegExp(regexStr);
+    return regex.test(cleanPath);
   }
 
   private registerFileIntent(stageId: string, agentId: string, files: string[]): void {
@@ -229,7 +348,12 @@ export class Orchestrator {
     }
   }
 
-  private async executeStage(stage: any, context: WorkflowContext, tracer: any): Promise<TaskResult> {
+  private async executeStage(
+    stage: any,
+    context: WorkflowContext,
+    tracer: any,
+    workflowDeadline: number
+  ): Promise<TaskResult> {
     const start = Date.now();
     let attempt = 0;
     const maxRetries = 2;
@@ -237,24 +361,36 @@ export class Orchestrator {
     let fallbackUsed: string | undefined;
     const dispatcher = getAgentDispatcher(process.env.USE_REAL_AGENT === 'true');
 
+    // Determine stage-specific timeout (per attempt)
+    const stageTimeoutMs = (stage.timeout_seconds || 300) * 1000;
+
     while (attempt < maxRetries) {
       attempt++;
       tracer.startStage(stage.id, stage.agentId, undefined);
 
       try {
+        // Check if stage already marked stuck (from a previous attempt that didn't clean up)
         if (this.isStageStuck(stage.id)) {
           throw new Error('STAGE_TIMEOUT');
         }
 
+        const sessionStart = Date.now();
         this.inFlightSessions.set(stage.id, {
           stageId: stage.id,
           agentId: stage.agentId,
-          startTime: Date.now(),
-          timeoutMs: (stage.timeout_seconds || 300) * 1000,
+          startTime: sessionStart,
+          timeoutMs: stageTimeoutMs,
           heartbeat: Date.now(),
         });
 
-        const dispatchResult = await dispatcher.dispatch(stage, context, context.traceId, usedModel);
+        // Wrap dispatch in a timeout; compute remaining time
+        const remainingMs = Math.max(0, this.inFlightSessions.get(stage.id)!.timeoutMs - (Date.now() - sessionStart));
+        const dispatchPromise = dispatcher.dispatch(stage, context, context.traceId, usedModel);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('STAGE_TIMEOUT')), remainingMs)
+        );
+
+        const dispatchResult = await Promise.race([dispatchPromise, timeoutPromise]);
         this.removeInFlightSession(stage.id);
 
         if (dispatchResult.status === 'completed') {
@@ -277,7 +413,7 @@ export class Orchestrator {
       } catch (err: any) {
         const duration = Date.now() - start;
         const isRetryable = this.isRetryableError(err);
-        const isTimeout = err instanceof Error && err.message.includes('timeout');
+        const isTimeout = err instanceof Error && (err.message.includes('timeout') || err.message === 'STAGE_TIMEOUT');
 
         this.logger.error(`Stage ${stage.id} attempt ${attempt} failed: ${err instanceof Error ? err.message : String(err)}`);
 
@@ -288,7 +424,7 @@ export class Orchestrator {
           continue;
         }
 
-        // Fallback model
+        // Fallback model (skip if timeout)
         if (attempt === maxRetries && !isTimeout) {
           const fallbackModel = this.getFallbackModel(stage.agentId);
           if (fallbackModel && fallbackModel !== usedModel) {
@@ -340,8 +476,9 @@ export class Orchestrator {
   }
 
   private getFallbackModel(agentId: string): string | undefined {
+    // orchestrator-main must never fallback
     if (agentId === 'orchestrator-main') {
-      return 'openai-codex/gpt-5.3-codex';
+      return null;
     }
     return 'openrouter/deepseek/deepseek-coder-v2-lite-instruct:free';
   }
@@ -376,12 +513,10 @@ export class Orchestrator {
   private async saveArtifact(stageId: string, traceId: string, result: TaskResult): Promise<void> {
     try {
       const artifactsDir = join(process.cwd(), '.openclaw', 'artifacts', traceId);
-      if (!existsSync(artifactsDir)) {
-        mkdirSync(artifactsDir, { recursive: true });
-      }
+      await fs.mkdir(artifactsDir, { recursive: true });
       const filePath = join(artifactsDir, `${stageId}.json`);
       const content = JSON.stringify(result, null, 2);
-      appendFileSync(filePath, content, { encoding: 'utf8' });
+      await fs.appendFile(filePath, content + '\n', { encoding: 'utf8' });
       this.logger.info(`Artifact saved: ${stageId} → ${filePath}`);
     } catch (err) {
       this.logger.error(`Failed to save artifact for ${stageId}: ${err instanceof Error ? err.message : String(err)}`);
