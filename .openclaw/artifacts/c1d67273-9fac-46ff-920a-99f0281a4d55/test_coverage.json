@@ -1,0 +1,13 @@
+{
+  "stageId": "test_coverage",
+  "agentId": "test-agent",
+  "status": "completed",
+  "output": {
+    "message": "Mock result",
+    "model": "openai-codex/gpt-5.3-codex",
+    "traceId": "c1d67273-9fac-46ff-920a-99f0281a4d55"
+  },
+  "durationMs": 51,
+  "attempt": 1,
+  "modelUsed": "openai-codex/gpt-5.3-codex"
+}

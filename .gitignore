@@ -1,12 +1,3 @@
-# Generated data - do not commit
-logs/
-artifacts/
-index/
-dist/
-
-# OpenClaw system files
-workspace-state.json
-
 # OS / Editor
 .DS_Store
 .idea/
@@ -14,13 +5,30 @@ workspace-state.json
 *.swp
 *.swo
 
-# Dependencies (if copied into repo)
-node_modules/
+# Local runtime/cache
+.trash/
+memory/*.tmp
 
-# Env
+# Node dependencies
+node_modules/
+.openclaw/node_modules/
+
+# Build outputs
+.openclaw/dist/
+.openclaw/index/
+
+# Generated runtime data
+.openclaw/logs/
+.openclaw/artifacts/
+.openclaw/workspace-state.json
+.openclaw/output.log
+
+# Local/private config
+.openclaw/openclaw-patched.json
+.openclaw/*.local.json
 .env
 *.local
 
-# Temporary
-*.log
+# Temp files
 *.tmp
+*.log

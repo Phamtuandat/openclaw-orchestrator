@@ -1,0 +1,27 @@
+# Generated runtime data
+logs/
+artifacts/
+index/
+dist/
+workspace-state.json
+output.log
+
+# Local/private config
+openclaw-patched.json
+*.local.json
+.env
+*.local
+
+# Dependencies
+node_modules/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary
+*.tmp
+*.log
