@@ -4,7 +4,8 @@ exports.selfHealingLogger = exports.tracerLogger = exports.workflowLogger = expo
 exports.getLogger = getLogger;
 const fs_1 = require("fs");
 const path_1 = require("path");
-const LOG_DIR = (0, path_1.join)(process.cwd(), ".openclaw", "logs");
+const paths_1 = require("./paths");
+const LOG_DIR = (0, paths_1.getLogsDir)();
 // Map component -> directory name (avoid agent/agents + workflow/workflows mismatch)
 const COMPONENT_DIR = {
     orchestrator: "orchestrator",

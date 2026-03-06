@@ -9,6 +9,7 @@ const uuid_1 = require("uuid");
 const logger_1 = require("./logger");
 const fs_1 = require("fs");
 const path_1 = require("path");
+const paths_1 = require("./paths");
 class WorkflowTracer {
     trace = null;
     logger = logger_1.orchestratorLogger;
@@ -70,8 +71,8 @@ class WorkflowTracer {
             this.trace.durationMs = new Date(this.trace.completedAt).getTime() - new Date(this.trace.startedAt).getTime();
         this.logger.workflow(this.trace.workflowId, `Workflow completed`, { traceId: this.trace.traceId, duration_ms: this.trace.durationMs });
         const trace = this.trace;
+        this.saveToFile(); // Save before clearing trace
         this.trace = null;
-        this.saveToFile();
         return trace;
     }
     fail(error) {
@@ -84,8 +85,8 @@ class WorkflowTracer {
         this.trace.errors.push(error);
         this.logger.workflow(this.trace.workflowId, `Workflow failed: ${error.message}`, { traceId: this.trace.traceId });
         const trace = this.trace;
+        this.saveToFile(); // Save before clearing trace
         this.trace = null;
-        this.saveToFile();
         return trace;
     }
     cancel() {
@@ -97,8 +98,8 @@ class WorkflowTracer {
             this.trace.durationMs = new Date(this.trace.completedAt).getTime() - new Date(this.trace.startedAt).getTime();
         this.logger.workflow(this.trace.workflowId, `Workflow cancelled`, { traceId: this.trace.traceId });
         const trace = this.trace;
+        this.saveToFile(); // Save before clearing trace
         this.trace = null;
-        this.saveToFile();
         return trace;
     }
     getTraceId() { return this.trace?.traceId; }
@@ -108,7 +109,7 @@ class WorkflowTracer {
         if (!this.trace)
             return;
         try {
-            const logsDir = (0, path_1.join)(process.cwd(), '.openclaw', 'logs', 'traces');
+            const logsDir = (0, path_1.join)((0, paths_1.getLogsDir)(), 'traces');
             if (!(0, fs_1.existsSync)(logsDir))
                 (0, fs_1.mkdirSync)(logsDir, { recursive: true });
             const datePart = new Date().toISOString().split('T')[0];

@@ -4,9 +4,9 @@ const http_1 = require("http");
 const fs_1 = require("fs");
 const path_1 = require("path");
 const logger_1 = require("./core/logger");
+const paths_1 = require("./core/paths");
 const PORT = 3001;
-const ROOT_DIR = process.cwd();
-const OPENCLAW_DIR = (0, path_1.join)(ROOT_DIR, '.openclaw');
+const OPENCLAW_DIR = (0, paths_1.getDataDir)();
 // Simple router
 function handleRequest(req, res) {
     const url = new URL(req.url || '/', `http://localhost:${PORT}`);

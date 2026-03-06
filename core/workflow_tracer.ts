@@ -96,9 +96,9 @@ export class WorkflowTracer {
     this.trace.completedAt = new Date().toISOString();
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.logger.workflow(this.trace.workflowId, `Workflow completed`, { traceId: this.trace.traceId, duration_ms: this.trace.durationMs });
+    this.saveToFile();
     const trace = this.trace;
     this.trace = null;
-    this.saveToFile();
     return trace;
   }
 
@@ -109,9 +109,9 @@ export class WorkflowTracer {
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.trace.errors.push(error);
     this.logger.workflow(this.trace.workflowId, `Workflow failed: ${error.message}`, { traceId: this.trace.traceId });
+    this.saveToFile();
     const trace = this.trace;
     this.trace = null;
-    this.saveToFile();
     return trace;
   }
 
@@ -121,9 +121,9 @@ export class WorkflowTracer {
     this.trace.completedAt = new Date().toISOString();
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.logger.workflow(this.trace.workflowId, `Workflow cancelled`, { traceId: this.trace.traceId });
+    this.saveToFile();
     const trace = this.trace;
     this.trace = null;
-    this.saveToFile();
     return trace;
   }
 

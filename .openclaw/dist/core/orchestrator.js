@@ -41,9 +41,10 @@ const workflow_tracer_1 = require("./workflow_tracer");
 const logger_1 = require("./logger");
 const file_index_builder_1 = require("./file_index_builder");
 const agent_dispatcher_1 = require("./agent_dispatcher");
+const paths_1 = require("./paths");
 class Orchestrator {
     logger = logger_1.orchestratorLogger;
-    workflowsDir = (0, path_1.join)(process.cwd(), '.openclaw', 'workflows');
+    workflowsDir = (0, paths_1.getWorkflowsDir)();
     loadedWorkflows = new Map();
     fileIntents = new Map();
     inFlightSessions = new Map();
@@ -431,7 +432,7 @@ class Orchestrator {
     }
     async saveArtifact(stageId, traceId, result) {
         try {
-            const artifactsDir = (0, path_1.join)(process.cwd(), '.openclaw', 'artifacts', traceId);
+            const artifactsDir = (0, path_1.join)((0, paths_1.getArtifactsDir)(), traceId);
             await fs_2.promises.mkdir(artifactsDir, { recursive: true });
             const filePath = (0, path_1.join)(artifactsDir, `${stageId}.json`);
             const content = JSON.stringify(result, null, 2);

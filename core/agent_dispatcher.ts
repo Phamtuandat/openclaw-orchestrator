@@ -122,3 +122,104 @@ export function getAgentDispatcher(useReal: boolean = false): AgentDispatcher {
 export function setAgentDispatcher(dispatcher: AgentDispatcher): void {
   dispatcherInstance = dispatcher;
 }
+
+// GatewayToolDispatcher for agents running inside a gateway operator session
+export class GatewayToolDispatcher implements AgentDispatcher {
+  async dispatch(stage: any, context: any, traceId: string, model?: string): Promise<AgentDispatchResult> {
+    const start = Date.now();
+    const agentId = stage.agentId;
+    const task = stage.task;
+    const inputs = context.inputs || {};
+
+    orchestratorLogger.info(`[GatewayToolDispatcher] Spawning ${agentId} via sessions_spawn`);
+
+    const tools = (globalThis as any).tools;
+    if (!tools) {
+      throw new Error('Gateway tools not available. This agent must run inside a gateway operator session with proper scopes.');
+    }
+
+    try {
+      // Spawn sub-agent
+      const spawnResult = await tools.invoke('sessions_spawn', {
+        agentId,
+        task,
+        inputs,
+        mode: 'run',
+        thread: false,
+        timeoutSeconds: stage.timeout_seconds || 300,
+        model
+      });
+
+      if (spawnResult.error) {
+        throw new Error(spawnResult.error.message || 'sessions_spawn failed');
+      }
+
+      const sessionKey = spawnResult.sessionKey;
+      orchestratorLogger.info(`[GatewayToolDispatcher] Spawned session ${sessionKey} for ${agentId}`);
+
+      // Wait for completion by polling sessions_list
+      const timeoutMs = (stage.timeout_seconds || 300) * 1000 + 10000;
+      const pollStart = Date.now();
+
+      while (Date.now() - pollStart < timeoutMs) {
+        // Use sessions_list to check status
+        const listResult = await tools.invoke('sessions_list', { sessionKey });
+        const sessions = listResult?.sessions || [];
+        const session = sessions.find((s: any) => s.sessionKey === sessionKey || s.key === sessionKey);
+
+        if (session) {
+          if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
+            const duration = Date.now() - start;
+            if (session.status !== 'completed') {
+              return {
+                stageId: stage.id,
+                agentId,
+                status: 'failed',
+                error: {
+                  code: 'AGENT_FAILED',
+                  message: session.error?.message || `Session ${session.status}`,
+                  retryable: false,
+                },
+                durationMs: duration,
+              };
+            }
+
+            return {
+              stageId: stage.id,
+              agentId,
+              status: 'completed',
+              output: session.output || { result: 'OK' },
+              durationMs: duration,
+            };
+          }
+        }
+
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      throw new Error(`Timeout waiting for session ${sessionKey}`);
+    } catch (err: any) {
+      const duration = Date.now() - start;
+      return {
+        stageId: stage.id,
+        agentId,
+        status: 'failed',
+        error: {
+          code: 'DISPATCH_FAILED',
+          message: err.message || String(err),
+          retryable: false,
+        },
+        durationMs: duration,
+      };
+    }
+  }
+
+  async getSession(sessionKey: string): Promise<any> {
+    const tools = (globalThis as any).tools;
+    if (!tools) throw new Error('tools not available');
+    const result = await tools.invoke('sessions_list', { sessionKey });
+    const sessions = result?.sessions || [];
+    return sessions.find((s: any) => s.sessionKey === sessionKey || s.key === sessionKey) || null;
+  }
+}

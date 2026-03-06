@@ -6,6 +6,7 @@ exports.saveFileIndex = saveFileIndex;
 const fs_1 = require("fs");
 const path_1 = require("path");
 const logger_1 = require("./logger");
+const paths_1 = require("./paths");
 class FileIndexBuilder {
     logger = logger_1.orchestratorLogger;
     workspacePath;
@@ -131,13 +132,13 @@ let cachedIndex = null;
 async function getOrBuildFileIndex(workspacePath) {
     if (cachedIndex)
         return cachedIndex;
-    const ws = workspacePath || (0, path_1.join)(process.cwd(), '.openclaw', 'workspace');
+    const ws = workspacePath || (0, path_1.join)((0, paths_1.getDataDir)(), 'workspace');
     const builder = new FileIndexBuilder(ws);
     cachedIndex = await builder.build();
     return cachedIndex;
 }
 function saveFileIndex(index, dir) {
-    const targetDir = dir || (0, path_1.join)(process.cwd(), '.openclaw', 'index');
+    const targetDir = dir || (0, path_1.join)((0, paths_1.getDataDir)(), 'index');
     if (!(0, fs_1.existsSync)(targetDir))
         (0, fs_1.mkdirSync)(targetDir, { recursive: true });
     const filePath = (0, path_1.join)(targetDir, 'file_index.json');

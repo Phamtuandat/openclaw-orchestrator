@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, existsSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { startWorkflowTrace } from './workflow_tracer';
+import { startWorkflowTrace, WorkflowTrace } from './workflow_tracer';
 import { orchestratorLogger } from './logger';
 import { FileIndex, getOrBuildFileIndex } from './file_index_builder';
 import { getAgentDispatcher } from './agent_dispatcher';
@@ -127,6 +127,7 @@ export class Orchestrator {
       const results: TaskResult[] = [];
 
       // Execute stages
+      let hasCriticalFailure = false;
       for (const stage of plan) {
         await this.waitIfConflicted(stage, context.fileIndex);
         const filesTouched = this.collectFileIntents(stage, context.fileIndex);
@@ -137,23 +138,29 @@ export class Orchestrator {
 
         if (result.status === 'failed' && this.isCriticalFailure(result)) {
           this.logger.error(`Critical stage failed, aborting: ${stage.id}`);
+          hasCriticalFailure = true;
           break;
         }
       }
 
       // Finalize trace
-      const finalTrace = tracer.complete();
+      let finalTrace: WorkflowTrace;
+      if (hasCriticalFailure) {
+        finalTrace = tracer.fail({ code: 'WORKFLOW_CRITICAL_FAILED', message: 'One or more critical stages failed', retryable: false });
+      } else {
+        finalTrace = tracer.complete();
+      }
       const aggregated = this.aggregateOutputs(results);
 
       return {
         workflowId,
-        status: 'completed',
+        status: hasCriticalFailure ? 'failed' : 'completed',
         traceId: finalTrace.traceId,
         startedAt: finalTrace.startedAt,
         completedAt: finalTrace.completedAt!,
         durationMs: finalTrace.durationMs!,
         stages: aggregated.stages,
-        errors: [],
+        errors: finalTrace.errors,
         finalOutput: aggregated,
       };
 
