@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "postbuild": "cp -r src/workflows .openclaw/",
     "start": "node .openclaw/dist/index.js",
     "dashboard": "node .openclaw/dist/dashboard.js",
     "test": "node .openclaw/dist/index.js crash_hunter project_path=\"/Volumes/Home_EX/Projects/Xcode/Projects/AnkiClone/Decky/Decky\""
@@ -16,7 +17,8 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "ws": "^8.18.0"
   },
   "keywords": ["openclaw", "orchestrator", "multi-agent", "swift", "workflow"],
   "author": "",
