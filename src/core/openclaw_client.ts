@@ -1,6 +1,15 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { createHmac, randomBytes, generateKeyPairSync, createSign, createVerify } from 'crypto';
 import { orchestratorLogger } from './logger';
+
+// Device identity structure
+interface DeviceIdentity {
+  id: string;
+  publicKey: string; // PEM format
+  privateKey: string; // PEM format
+  createdAt: string;
+}
 
 // WebSocket client for OpenClaw Gateway
 export class OpenClawWsClient {
@@ -19,10 +28,17 @@ export class OpenClawWsClient {
   private authResolve?: () => void;
   private authReject?: (err: any) => void;
   private connectRequestId?: string;
+  private deviceIdentity?: DeviceIdentity;
+  private deviceToken?: string;
+  private pendingChallenge?: { nonce: string; ts: number };
+  private devicePath: string;
 
   constructor(options?: { baseUrl?: string; token?: string; agentId?: string }) {
+    const home = process.env.HOME || '/Users/datpham';
+    this.devicePath = join(home, '.openclaw', 'devices', 'orchestrator-device.json');
+
     const configPath = process.env.OPENCLAW_CONFIG_PATH || join(process.cwd(), 'openclaw.json');
-    const fallbackConfigPath = join(process.env.HOME || '/Users/datpham', '.openclaw', 'openclaw.json');
+    const fallbackConfigPath = join(home, '.openclaw', 'openclaw.json');
     let gatewayUrl = 'ws://127.0.0.1:18789';
     let gatewayToken = '';
 
@@ -49,6 +65,62 @@ export class OpenClawWsClient {
     this.url = options?.baseUrl || gatewayUrl;
     this.token = options?.token || gatewayToken || process.env.OPENCLAW_TOKEN || '';
     this.agentId = options?.agentId || process.env.OPENCLAW_AGENT_ID;
+
+    // Load or create device identity
+    this.deviceIdentity = this.loadOrCreateDevice();
+  }
+
+  private loadOrCreateDevice(): DeviceIdentity {
+    if (existsSync(this.devicePath)) {
+      try {
+        const content = readFileSync(this.devicePath, 'utf8');
+        const device = JSON.parse(content) as DeviceIdentity;
+        orchestratorLogger.info(`[OpenClawWsClient] Loaded device identity: ${device.id}`);
+        return device;
+      } catch (err) {
+        console.warn('[OpenClawWsClient] Failed to load device, creating new:', err);
+      }
+    }
+
+    // Create new device identity with RSA keypair (2048-bit)
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+
+    const deviceId = `orchestrator-main-${randomBytes(8).toString('hex')}`;
+
+    const device: DeviceIdentity = {
+      id: deviceId,
+      publicKey,
+      privateKey,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Ensure devices dir exists
+    const deviceDir = join(process.env.HOME || '/Users/datpham', '.openclaw', 'devices');
+    mkdirSync(deviceDir, { recursive: true });
+    writeFileSync(this.devicePath, JSON.stringify(device, null, 2));
+    orchestratorLogger.info(`[OpenClawWsClient] Created new device identity: ${deviceId}`);
+
+    return device;
+  }
+
+  private signPayload(payload: any, privateKeyPem: string): string {
+    const payloadStr = JSON.stringify(payload);
+    const sign = createSign('SHA256');
+    sign.update(payloadStr);
+    sign.end();
+    return sign.sign(privateKeyPem, 'hex');
+  }
+
+  private verifySignature(payload: any, signatureHex: string, publicKeyPem: string): boolean {
+    const payloadStr = JSON.stringify(payload);
+    const verify = createVerify('SHA256');
+    verify.update(payloadStr);
+    verify.end();
+    return verify.verify(publicKeyPem, signatureHex, 'hex');
   }
 
   async connect(): Promise<void> {
@@ -64,8 +136,7 @@ export class OpenClawWsClient {
     this._connectPromise = new Promise((resolve, reject) => {
       orchestratorLogger.info(`[OpenClawWsClient] Connecting to ${this.url}`);
       const WebSocket = require('ws');
-      
-      // Use token in query only; no subprotocols; gateway handles auth via query
+
       const urlWithToken = this.token ? `${this.url}?token=${encodeURIComponent(this.token)}` : this.url;
       orchestratorLogger.info(`[OpenClawWsClient] Full URL: ${urlWithToken.replace(this.token, 'TOKEN_MASKED')}`);
       this.ws = new WebSocket(urlWithToken);
@@ -82,13 +153,28 @@ export class OpenClawWsClient {
         try {
           const msg = JSON.parse(data);
           orchestratorLogger.debug(`[OpenClawWsClient] Received:`, msg);
-          
+
+          // Handle connect.challenge event
+          if (msg.type === 'event' && msg.event === 'connect.challenge' && msg.payload?.nonce) {
+            orchestratorLogger.info(`[OpenClawWsClient] Received connect.challenge, sending connect request`);
+            this.pendingChallenge = {
+              nonce: msg.payload.nonce,
+              ts: msg.payload.ts || Date.now()
+            };
+            this.sendConnectRequest();
+            return;
+          }
+
           // Handle response: { type: "res", id, ok?, payload?, error? }
           if (msg.type === 'res' && msg.id) {
-            // Check if this is the connect auth response
             if (msg.id === this.connectRequestId) {
               if (msg.ok) {
                 this.authenticated = true;
+                // Save device token if present
+                if (msg.payload?.auth?.deviceToken) {
+                  this.deviceToken = msg.payload.auth.deviceToken;
+                  orchestratorLogger.info(`[OpenClawWsClient] Received device token`);
+                }
                 console.log('[OpenClawWsClient] Authentication successful');
                 if (this.authResolve) this.authResolve();
               } else {
@@ -104,7 +190,7 @@ export class OpenClawWsClient {
               const pending = this.pendingRequests.get(msg.id)!;
               clearTimeout(pending.timeout);
               this.pendingRequests.delete(msg.id);
-              
+
               if (!msg.ok || msg.error) {
                 pending.reject(new Error(msg.error?.message || 'WS error'));
               } else {
@@ -113,13 +199,13 @@ export class OpenClawWsClient {
               return;
             }
           }
-          
+
           // Handle notifications / events
           if (msg.type === 'event') {
             this.handleNotification(msg);
             return;
           }
-          
+
           orchestratorLogger.debug(`[OpenClawWsClient] Unhandled message type: ${msg.type}`, msg);
         } catch (err) {
           orchestratorLogger.error(`[OpenClawWsClient] Failed to parse message:`, err);
@@ -148,62 +234,95 @@ export class OpenClawWsClient {
     });
   }
 
+  private sendConnectRequest() {
+    if (!this.pendingChallenge || !this.deviceIdentity) {
+      orchestratorLogger.error('[OpenClawWsClient] Cannot send connect: missing challenge or device');
+      return;
+    }
+
+    const { nonce, ts } = this.pendingChallenge;
+    const device = this.deviceIdentity;
+
+    // Build params for connect - using canonical operator client identity
+    const connectParams = {
+      minProtocol: 3,
+      maxProtocol: 3,
+      client: {
+        id: 'cli',
+        version: '0.1.0',
+        platform: process.platform || 'darwin',
+        mode: 'backend'
+      },
+      role: 'operator',
+      scopes: ['operator.read', 'operator.write', 'operator.admin', 'operator.approvals', 'operator.pairing'],
+      caps: [],
+      commands: [],
+      permissions: {},
+      auth: { token: this.token },
+      locale: 'en-US',
+      userAgent: 'openclaw-orchestrator/0.1.0',
+      device: {
+        id: device.id,
+        publicKey: device.publicKey,
+      }
+    };
+
+    // Sign the entire params (including device info and nonce)
+    const signingPayload = {
+      ...connectParams,
+      nonce
+    };
+
+    const signature = this.signPayload(signingPayload, device.privateKey);
+
+    const connectId = `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.connectRequestId = connectId;
+
+    const payload = {
+      type: 'req',
+      id: connectId,
+      method: 'connect',
+      params: {
+        ...connectParams,
+        device: {
+          id: device.id,
+          publicKey: device.publicKey,
+          signature,
+          signedAt: Date.now(),
+          nonce
+        }
+      }
+    };
+
+    orchestratorLogger.debug(`[OpenClawWsClient] Sending connect request with device auth`);
+    this.lastSentMessage = payload;
+    this.ws.send(JSON.stringify(payload), (err: any) => {
+      if (err) {
+        orchestratorLogger.error('[OpenClawWsClient] Failed to send connect:', err);
+      }
+    });
+  }
+
+  private handleNotification(msg: any): void {
+    orchestratorLogger.debug(`[OpenClawWsClient] Notification: ${msg.event || msg.method}`, msg.payload);
+    // Other notifications can be handled here
+  }
+
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       orchestratorLogger.error(`[OpenClawWsClient] Max reconnection attempts (${this.maxReconnectAttempts}) reached`);
       return;
     }
-    
+
     this.reconnectAttempts++;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     orchestratorLogger.info(`[OpenClawWsClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-    
+
     setTimeout(() => {
       this.connect().catch(err => {
         orchestratorLogger.error(`[OpenClawWsClient] Reconnect failed:`, err);
       });
     }, delay);
-  }
-
-  private handleNotification(msg: any): void {
-    orchestratorLogger.debug(`[OpenClawWsClient] Notification: ${msg.event || msg.method}`, msg.payload);
-    
-    // Handle connect.challenge: gateway requests proof of token possession
-    if (msg.event === 'connect.challenge' && msg.payload?.nonce) {
-      const { nonce } = msg.payload;
-      orchestratorLogger.info(`[OpenClawWsClient] Received connect.challenge, sending connect request`);
-      // Create auth promise
-      this.authReady = new Promise<void>((resolve, reject) => {
-        this.authResolve = resolve;
-        this.authReject = reject;
-      });
-
-      const connectId = `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      this.connectRequestId = connectId;
-      this.ws.send(JSON.stringify({
-        type: 'req',
-        id: connectId,
-        method: 'connect',
-        params: {
-          minProtocol: 3,
-          maxProtocol: 3,
-          client: {
-            id: 'gateway-client',
-            version: '0.1.0',
-            platform: process.platform || 'darwin',
-            mode: 'backend'
-          },
-          role: 'operator',
-          scopes: ['operator.read', 'operator.write', 'operator.admin', 'operator.approvals', 'operator.pairing'],
-          caps: [],
-          commands: [],
-          permissions: {},
-          auth: { token: this.token },
-          locale: 'en-US',
-          userAgent: 'openclaw-orchestrator/0.1.0'
-        }
-      }));
-    }
   }
 
   async sendRequest(method: string, params: any, timeoutMs: number = 30000): Promise<any> {
@@ -218,7 +337,6 @@ export class OpenClawWsClient {
       if (this.authReady) {
         await this.authReady;
       } else {
-        // No auth in progress, maybe challenge not received yet? Wait a bit
         await new Promise(resolve => setTimeout(resolve, 100));
         if (!this.authenticated) {
           throw new Error('Authentication not completed');
@@ -235,7 +353,7 @@ export class OpenClawWsClient {
     };
 
     let timer: NodeJS.Timeout;
-    const timeoutPromise = new Promise((_, reject) => {
+    const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         reject(new Error(`Request timeout after ${timeoutMs}ms`));
       }, timeoutMs);
@@ -243,7 +361,7 @@ export class OpenClawWsClient {
 
     const responsePromise = new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject, timeout: timer });
-      
+
       orchestratorLogger.debug(`[OpenClawWsClient] Sending: ${method}`, params);
       this.lastSentMessage = payload;
       this.ws.send(JSON.stringify(payload), (err: any) => {
@@ -271,23 +389,38 @@ export class OpenClawWsClient {
     timeoutSeconds?: number;
     model?: string;
   }): Promise<{ sessionKey: string; result?: any; error?: any }> {
+    const requestParams = {
+      agentId: params.agentId,
+      task: params.task,
+      mode: params.mode || 'run',
+      thread: params.thread ?? false,
+      timeoutSeconds: params.timeoutSeconds,
+      model: params.model,
+      inputs: params.inputs || {}
+    };
+
     try {
-      // Try sessions_spawn first (underscore version)
-      const result = await this.sendRequest('sessions_spawn', {
-        agentId: params.agentId,
-        task: params.task,
-        mode: params.mode || 'run',
-        thread: params.thread ?? false,
-        timeoutSeconds: params.timeoutSeconds,
-        model: params.model,
-        inputs: params.inputs || {}
-      }, 30000);
-      
+      const result = await this.sendRequest('sessions_spawn', requestParams, 30000);
       return {
         sessionKey: result?.sessionKey,
         result
       };
     } catch (err: any) {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('unknown method: sessions_spawn')) {
+        orchestratorLogger.warn('[OpenClawWsClient] sessions_spawn unsupported, falling back to sessions.spawn');
+        try {
+          const result = await this.sendRequest('sessions.spawn', requestParams, 30000);
+          return {
+            sessionKey: result?.sessionKey,
+            result
+          };
+        } catch (fallbackErr: any) {
+          orchestratorLogger.error(`[OpenClawWsClient] spawnSession fallback error:`, fallbackErr);
+          return { sessionKey: '', error: fallbackErr };
+        }
+      }
+
       orchestratorLogger.error(`[OpenClawWsClient] spawnSession error:`, err);
       return { sessionKey: '', error: err };
     }
@@ -295,24 +428,35 @@ export class OpenClawWsClient {
 
   async waitForSession(sessionKey: string, timeoutMs = 300000): Promise<any> {
     const start = Date.now();
-    
+
     while (Date.now() - start < timeoutMs) {
       try {
-        const result = await this.sendRequest('sessions.list', {
-          sessionKey
-        }, 10000);
+        // sessions_list does not accept sessionKey filter; list recent sessions then match locally.
+        // Keep dot-notation fallback for older gateways.
+        let result: any;
+        try {
+          result = await this.sendRequest('sessions_list', { limit: 100 }, 10000);
+        } catch (err: any) {
+          const msg = String(err?.message || err || '');
+          if (msg.includes('unknown method: sessions_list')) {
+            result = await this.sendRequest('sessions.list', { limit: 100 }, 10000);
+          } else {
+            throw err;
+          }
+        }
+
         const sessions = result?.sessions || [];
-        const session = sessions.find(s => s.key === sessionKey || s.sessionKey === sessionKey);
+        const session = sessions.find((s: any) => s.key === sessionKey || s.sessionKey === sessionKey);
         if (session && (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled')) {
           return session;
         }
       } catch (e) {
         // Continue polling
       }
-      
+
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
+
     throw new Error(`Timeout waiting for session ${sessionKey}`);
   }
 
@@ -340,7 +484,7 @@ export function getOpenClawClient(): any {
     const fallbackConfigPath = join(process.env.HOME || '/Users/datpham', '.openclaw', 'openclaw.json');
     let gatewayUrl = 'ws://127.0.0.1:18789';
     let agentId: string | undefined;
-    
+
     const loadConfig = (path: string) => {
       if (existsSync(path)) {
         try {
@@ -359,10 +503,10 @@ export function getOpenClawClient(): any {
     if (!loadConfig(configPath)) {
       loadConfig(fallbackConfigPath);
     }
-    
+
     gatewayUrl = process.env.OPENCLAW_GATEWAY_URL || gatewayUrl;
     agentId = process.env.OPENCLAW_AGENT_ID || agentId;
-    
+
     if (gatewayUrl.startsWith('ws://') || gatewayUrl.startsWith('wss://')) {
       globalClient = new OpenClawWsClient({ baseUrl: gatewayUrl, agentId });
       clientType = 'ws';
@@ -381,7 +525,7 @@ export function getOpenClawClient(): any {
       }
     }
   }
-  
+
   return globalClient;
 }
 

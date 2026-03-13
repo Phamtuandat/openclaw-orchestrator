@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join, relative, parse } from 'path';
 import { orchestratorLogger } from './core/logger';
 import { getDataDir } from './core/paths';
+import { Metrics } from './core/metrics';
 
 const PORT = 3001;
 const OPENCLAW_DIR = getDataDir();
@@ -70,6 +71,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       if (traceId && stageId) {
         serveArtifact(res, traceId, stageId);
       }
+    } else if (pathname === '/api/metrics/summary') {
+      serveMetricsSummary(req, res);
     } else if (pathname.startsWith('/api/logs/')) {
       const parts = pathname.split('/');
       const component = parts[2];
@@ -317,6 +320,36 @@ function serveLogs(res: ServerResponse, component: string, date: string): void {
   const content = readFileSync(logFile, 'utf8');
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.end(content);
+}
+
+function serveMetricsSummary(req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const metrics = Metrics.getInstance();
+    const summary = metrics.safeReadSummary();
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(summary, null, 2));
+  } catch (err) {
+    // Return empty valid summary
+    const empty: any = {
+      scope: 'all-time',
+      generatedAt: new Date().toISOString(),
+      workflows: { started: 0, completed: 0, failed: 0, successRate: 0, avgDurationMs: 0 },
+      stages: { completed: 0, failed: 0, avgLatencyMs: 0, p95LatencyMs: 0 },
+      agents: {},
+      reliability: {
+        dispatcherErrors: 0,
+        timeouts: 0,
+        fallbacksUsed: 0,
+        retries: 0,
+        conflictsWaited: 0,
+        conflictTimeouts: 0,
+        circuitOpenCount: 0,
+        stuckStageTimeouts: 0,
+      },
+    };
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(empty, null, 2));
+  }
 }
 
 // Start server

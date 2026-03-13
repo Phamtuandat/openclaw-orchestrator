@@ -1,4 +1,5 @@
 import { orchestratorLogger } from './logger';
+import { execFile } from 'child_process';
 
 export interface AgentDispatchResult {
   stageId: string;
@@ -72,7 +73,6 @@ export class OpenClawAgentDispatcher implements AgentDispatcher {
 
     try {
       const client = this.getClient();
-      // Ensure WebSocket connection is established before spawning
       if (typeof client.connect === 'function') {
         await client.connect();
       }
@@ -86,6 +86,23 @@ export class OpenClawAgentDispatcher implements AgentDispatcher {
       });
 
       if (!spawnResult.sessionKey) {
+        const msg = String(spawnResult?.error?.message || '');
+        if (msg.includes('unknown method: sessions_') || msg.includes('unknown method: sessions.')) {
+          orchestratorLogger.warn('[orchestrator] sessions_spawn RPC unsupported, fallback to ACPX direct exec');
+          const acpx = await this.dispatchViaAcpx(stage, context, task, timeoutMs);
+          const duration = Date.now() - start;
+          return {
+            stageId: stage.id,
+            agentId,
+            status: 'completed',
+            output: {
+              ...acpx,
+              fallback: 'acpx',
+            },
+            durationMs: duration,
+          };
+        }
+
         const error = spawnResult.error;
         if (error instanceof Error) {
           orchestratorLogger.error(`[orchestrator] session spawn failed`, error, { agentId, context: { model } });
@@ -150,6 +167,46 @@ export class OpenClawAgentDispatcher implements AgentDispatcher {
         durationMs: duration,
       };
     }
+  }
+
+  private mapToAcpxAgent(agentId: string): string {
+    const normalized = String(agentId || '').toLowerCase();
+    if (normalized.includes('logic')) return 'codex';
+    if (normalized.includes('ui')) return 'codex';
+    if (normalized.includes('test')) return 'codex';
+    if (normalized.includes('safety')) return 'codex';
+    return 'codex';
+  }
+
+  private getAcpxCmd(): string {
+    return (
+      process.env.ACPX_CMD ||
+      '/opt/homebrew/lib/node_modules/openclaw/extensions/acpx/node_modules/.bin/acpx'
+    );
+  }
+
+  private async dispatchViaAcpx(stage: any, context: any, prompt: string, timeoutMs: number): Promise<Record<string, any>> {
+    const acpxCmd = this.getAcpxCmd();
+    const acpxAgent = this.mapToAcpxAgent(stage.agentId);
+    const cwd = context?.inputs?.project_path || process.cwd();
+
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      execFile(acpxCmd, [acpxAgent, 'exec', prompt], { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message || 'acpx exec failed'));
+          return;
+        }
+        resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
+      });
+    });
+
+    return {
+      runner: 'acpx',
+      agent: acpxAgent,
+      text: result.stdout.trim(),
+      stderr: result.stderr.trim(),
+      timestamp: new Date().toISOString(),
+    };
   }
 
   private buildPrompt(stage: any, context: any, traceId: string): string {

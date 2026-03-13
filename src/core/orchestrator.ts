@@ -8,6 +8,8 @@ import { getAgentDispatcher } from './agent_dispatcher';
 import { DependencyGraphBuilder } from './dependency_graph_builder';
 import * as glob from 'glob';
 import { getWorkflowsDir, getArtifactsDir } from './paths';
+import { Metrics } from './metrics';
+import { CircuitBreaker } from './circuit_breaker';
 
 // Types
 interface WorkflowDefinition {
@@ -66,12 +68,16 @@ export class Orchestrator {
   private logger = orchestratorLogger;
   private workflowsDir = getWorkflowsDir();
   private loadedWorkflows = new Map<string, WorkflowDefinition>();
+  private metrics: Metrics;
+  private breaker: CircuitBreaker;
 
   private fileIntents = new Map<string, FileIntent>();
   private inFlightSessions = new Map<string, InFlightSession>();
   private conflictGraph?: any;
 
   constructor() {
+    this.metrics = Metrics.getInstance();
+    this.breaker = new CircuitBreaker();
     this.loadAllWorkflows();
   }
 
@@ -100,6 +106,109 @@ export class Orchestrator {
     }
   }
 
+  // Metrics emission helpers
+  private async emitWorkflowStarted(workflowId: string, traceId: string): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'workflow',
+      traceId,
+      workflowId,
+      status: 'started',
+    });
+  }
+
+  private async emitWorkflowCompleted(workflowId: string, traceId: string, durationMs: number): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'workflow',
+      traceId,
+      workflowId,
+      status: 'completed',
+      durationMs,
+    });
+  }
+
+  private async emitWorkflowFailed(workflowId: string, traceId: string, durationMs: number, error: any): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'workflow',
+      traceId,
+      workflowId,
+      status: 'failed',
+      durationMs,
+      error: {
+        code: error.code || 'WORKFLOW_FAILED',
+        message: error.message || String(error),
+        retryable: error.retryable || false,
+      },
+    });
+  }
+
+  private async emitStageStarted(stageId: string, agentId: string, traceId: string, workflowId: string): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'stage',
+      traceId,
+      workflowId,
+      stageId,
+      agentId,
+      status: 'started',
+    });
+  }
+
+  private async emitStageCompleted(stageId: string, agentId: string, traceId: string, workflowId: string, latencyMs: number): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'stage',
+      traceId,
+      workflowId,
+      stageId,
+      agentId,
+      status: 'completed',
+      latencyMs,
+    });
+  }
+
+  private async emitStageFailed(stageId: string, agentId: string, traceId: string, workflowId: string, latencyMs: number, error: any): Promise<void> {
+    await this.metrics.emit({
+      timestamp: new Date().toISOString(),
+      type: 'stage',
+      traceId,
+      workflowId,
+      stageId,
+      agentId,
+      status: 'failed',
+      latencyMs,
+      error: {
+        code: error.code || 'STAGE_FAILED',
+        message: error.message || String(error),
+        retryable: error.retryable || false,
+        fallbackUsed: error.fallbackUsed,
+      },
+    });
+  }
+
+  private async emitAgentCall(agentId: string, durationMs: number, status: 'completed' | 'failed', error?: any, modelUsed?: string, traceId?: string): Promise<void> {
+    const ev: any = {
+      timestamp: new Date().toISOString(),
+      type: 'agent',
+      agentId,
+      status,
+      durationMs,
+      modelUsed,
+    };
+    if (traceId) ev.traceId = traceId;
+    if (error) {
+      ev.error = {
+        code: error.code || 'AGENT_ERROR',
+        message: error.message || String(error),
+        retryable: error.retryable || false,
+        fallbackUsed: error.fallbackUsed,
+      };
+    }
+    await this.metrics.emit(ev);
+  }
+
   getWorkflow(id: string): WorkflowDefinition | undefined {
     return this.loadedWorkflows.get(id);
   }
@@ -116,6 +225,9 @@ export class Orchestrator {
     const tracer = startWorkflowTrace(workflowId, context.inputs);
     const traceId = tracer.getTraceId()!;
     context.traceId = traceId;
+
+    // Emit workflow started
+    await this.emitWorkflowStarted(workflowId, traceId);
 
     // Overall deadline based on workflow timeout
     const deadline = Date.now() + workflow.timeout_minutes * 60 * 1000;
@@ -154,11 +266,78 @@ export class Orchestrator {
 
         let stageResult: TaskResult | null = null;
         try {
-          await this.waitIfConflicted(stage, context.fileIndex, deadline);
+          // Determine if there are conflicts before waiting
           const filesTouched = this.collectFileIntents(stage, context.fileIndex);
-          this.registerFileIntent(stage.id, stage.agentId, filesTouched);
-          stageResult = await this.executeStage(stage, context, tracer, deadline);
-          results.push(stageResult);
+          let hasConflicts = false;
+          for (const file of filesTouched) {
+            const intent = this.fileIntents.get(file);
+            if (intent && intent.stageId !== stage.id) {
+              hasConflicts = true;
+              break;
+            }
+          }
+
+          // Wait for conflict resolution (may throw CONFLICT_WAIT_TIMEOUT)
+          try {
+            if (hasConflicts) {
+              await this.waitIfConflicted(stage, context.fileIndex, deadline);
+            }
+          } catch (err: any) {
+            if (err.message === 'CONFLICT_WAIT_TIMEOUT') {
+              // Emit reliability: conflict timeout
+              await this.metrics.emit({
+                timestamp: new Date().toISOString(),
+                type: 'reliability',
+                traceId: context.traceId,
+                workflowId: context.workflowId,
+                stageId: stage.id,
+                agentId: stage.agentId,
+                status: 'incremented',
+                reliabilityFlags: { conflictTimeout: true },
+              });
+              // Emit stage failed metrics
+              await this.emitStageStarted(stage.id, stage.agentId, context.traceId, context.workflowId);
+              await this.emitStageFailed(stage.id, stage.agentId, context.traceId, context.workflowId, 0, { code: 'CONFLICT_WAIT_TIMEOUT', message: err.message, retryable: false });
+              await this.emitAgentCall(stage.agentId, 0, 'failed', { code: 'CONFLICT_WAIT_TIMEOUT', message: err.message, retryable: false }, undefined, context.traceId);
+              // Also record in tracer for consistency
+              tracer.startStage(stage.id, stage.agentId, undefined);
+              tracer.failStage(stage.id, { code: 'CONFLICT_WAIT_TIMEOUT', message: err.message, retryable: false });
+              stageResult = {
+                stageId: stage.id,
+                agentId: stage.agentId,
+                status: 'failed',
+                error: { code: 'CONFLICT_WAIT_TIMEOUT', message: err.message, retryable: false },
+                durationMs: 0,
+              };
+            } else {
+              throw err;
+            }
+          }
+
+          // If we already have a result due to conflict timeout, skip execution
+          if (stageResult) {
+            results.push(stageResult);
+            // Do NOT register file intents for conflict timeout (stage never executed)
+          } else {
+            // No conflict timeout; proceed normally
+            // Register file intents now (after conflicts resolved)
+            this.registerFileIntent(stage.id, stage.agentId, filesTouched);
+            // Emit reliability: conflictsWaited if there were conflicts and we successfully waited
+            if (hasConflicts) {
+              await this.metrics.emit({
+                timestamp: new Date().toISOString(),
+                type: 'reliability',
+                traceId: context.traceId,
+                workflowId: context.workflowId,
+                stageId: stage.id,
+                agentId: stage.agentId,
+                status: 'incremented',
+                reliabilityFlags: { conflictsWaited: true },
+              });
+            }
+            stageResult = await this.executeStage(stage, context, tracer, deadline);
+            results.push(stageResult);
+          }
         } finally {
           // Guaranteed cleanup: remove in-flight session and file intents
           this.removeInFlightSession(stage.id);
@@ -173,20 +352,30 @@ export class Orchestrator {
 
       // Finalize trace
       let finalTrace: WorkflowTrace;
+      let workflowStatus: 'completed' | 'failed' = 'completed';
       if (hasCriticalFailure) {
         finalTrace = tracer.fail({ code: 'WORKFLOW_CRITICAL_FAILED', message: 'One or more critical stages failed', retryable: false });
+        workflowStatus = 'failed';
       } else {
         finalTrace = tracer.complete();
       }
       const aggregated = this.aggregateOutputs(results);
+      const totalDuration = finalTrace.durationMs || 0;
+
+      // Emit workflow completion metrics
+      if (workflowStatus === 'completed') {
+        await this.emitWorkflowCompleted(workflowId, traceId, totalDuration);
+      } else {
+        await this.emitWorkflowFailed(workflowId, traceId, totalDuration, { code: 'WORKFLOW_CRITICAL_FAILED', message: 'Critical stage failed' });
+      }
 
       return {
         workflowId,
-        status: hasCriticalFailure ? 'failed' : 'completed',
+        status: workflowStatus,
         traceId: finalTrace.traceId,
         startedAt: finalTrace.startedAt,
         completedAt: finalTrace.completedAt!,
-        durationMs: finalTrace.durationMs!,
+        durationMs: totalDuration,
         stages: aggregated.stages,
         errors: finalTrace.errors,
         finalOutput: aggregated,
@@ -194,6 +383,9 @@ export class Orchestrator {
 
     } catch (err) {
       tracer.fail({ code: 'WORKFLOW_FAILED', message: err instanceof Error ? err.message : String(err), retryable: false });
+      // Emit workflow failed on exception
+      const totalDuration = Date.now() - /* need start time? We can approximate or track separately. */ 0;
+      await this.emitWorkflowFailed(workflowId, context.traceId, 0, { code: 'WORKFLOW_FAILED', message: err instanceof Error ? err.message : String(err) });
       throw err;
     }
   }
@@ -372,14 +564,39 @@ export class Orchestrator {
     // Determine stage-specific timeout (per attempt)
     const stageTimeoutMs = (stage.timeout_seconds || 300) * 1000;
 
+    // Emit stage started
+    await this.emitStageStarted(stage.id, stage.agentId, context.traceId, context.workflowId);
+
     while (attempt < maxRetries) {
       attempt++;
       tracer.startStage(stage.id, stage.agentId, undefined);
 
       try {
+        // Check circuit breaker before dispatch
+        if (this.breaker.isOpen(stage.agentId)) {
+          // Emit stage failed with circuit open, plus agent call
+          const circErr = { code: 'CIRCUIT_OPEN', message: 'Circuit breaker is open for agent', retryable: false };
+          // Fail the tracer stage
+          tracer.failStage(stage.id, { code: 'CIRCUIT_OPEN', message: 'Circuit breaker is open for agent', retryable: false });
+          await this.emitStageFailed(stage.id, stage.agentId, context.traceId, context.workflowId, 0, circErr);
+          await this.emitAgentCall(stage.agentId, 0, 'failed', circErr, undefined, context.traceId);
+          this.breaker.record(stage.agentId, false);
+          return {
+            stageId: stage.id,
+            agentId: stage.agentId,
+            status: 'failed',
+            error: circErr,
+            durationMs: 0,
+            attempt,
+            modelUsed: usedModel,
+          };
+        }
+
         // Check if stage already marked stuck (from a previous attempt that didn't clean up)
         if (this.isStageStuck(stage.id)) {
-          throw new Error('STAGE_TIMEOUT');
+          const err = new Error('STAGE_TIMEOUT') as any;
+          err.isStuck = true;
+          throw err;
         }
 
         const sessionStart = Date.now();
@@ -403,6 +620,10 @@ export class Orchestrator {
 
         if (dispatchResult.status === 'completed') {
           tracer.completeStage(stage.id, dispatchResult.output);
+          // Emit stage completed and agent call
+          await this.emitStageCompleted(stage.id, stage.agentId, context.traceId, context.workflowId, dispatchResult.durationMs);
+          await this.emitAgentCall(stage.agentId, dispatchResult.durationMs, 'completed', undefined, usedModel, context.traceId);
+          this.breaker.record(stage.agentId, true);
           const result: TaskResult = {
             stageId: stage.id,
             agentId: stage.agentId,
@@ -422,10 +643,22 @@ export class Orchestrator {
         const duration = Date.now() - start;
         const isRetryable = this.isRetryableError(err);
         const isTimeout = err instanceof Error && (err.message.includes('timeout') || err.message === 'STAGE_TIMEOUT');
+        const isStuck = (err as any).isStuck === true;
 
         this.logger.error(`Stage ${stage.id} attempt ${attempt} failed: ${err instanceof Error ? err.message : String(err)}`);
 
         if (attempt < maxRetries && isRetryable) {
+          // Emit reliability: retry
+          await this.metrics.emit({
+            timestamp: new Date().toISOString(),
+            type: 'reliability',
+            traceId: context.traceId,
+            workflowId: context.workflowId,
+            stageId: stage.id,
+            agentId: stage.agentId,
+            status: 'incremented',
+            reliabilityFlags: { isRetry: true },
+          });
           const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
           this.logger.warn(`Retrying ${stage.id} in ${backoffMs}ms`);
           await new Promise(r => setTimeout(r, backoffMs));
@@ -453,6 +686,25 @@ export class Orchestrator {
         };
         tracer.failStage(stage.id, errorData);
 
+        // Emit reliability: stuck timeout if applicable
+        if (isStuck) {
+          await this.metrics.emit({
+            timestamp: new Date().toISOString(),
+            type: 'reliability',
+            traceId: context.traceId,
+            workflowId: context.workflowId,
+            stageId: stage.id,
+            agentId: stage.agentId,
+            status: 'incremented',
+            reliabilityFlags: { isStuckTimeout: true },
+          });
+        }
+
+        // Emit stage failed and agent call
+        await this.emitStageFailed(stage.id, stage.agentId, context.traceId, context.workflowId, duration, errorData);
+        await this.emitAgentCall(stage.agentId, duration, 'failed', errorData, usedModel, context.traceId);
+        this.breaker.record(stage.agentId, false);
+
         const result: TaskResult = {
           stageId: stage.id,
           agentId: stage.agentId,
@@ -467,6 +719,7 @@ export class Orchestrator {
       }
     }
 
+    // Unexpected exit from loop
     return {
       stageId: stage.id,
       agentId: stage.agentId,
