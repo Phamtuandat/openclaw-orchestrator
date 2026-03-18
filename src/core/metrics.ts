@@ -297,6 +297,9 @@ export class Metrics {
         sum.stages._latencyCount++;
         sum.stages.avgLatencyMs = sum.stages._latencyCount > 0 ? Math.round(sum.stages._latencySum / sum.stages._latencyCount) : 0;
         // p95 buffer
+        if (!Array.isArray(sum.stages._latencyBuffer)) {
+          sum.stages._latencyBuffer = [];
+        }
         sum.stages._latencyBuffer.push(latency);
         if (sum.stages._latencyBuffer.length > this.latencyBufferMax) {
           sum.stages._latencyBuffer.shift();

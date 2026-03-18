@@ -85,6 +85,43 @@ describe('Orchestrator - Config-Driven Agent Resolution', () => {
       expect(result.source).toBe('config');
     });
 
+    it('should resolve dynamic subagent config by agentId key', () => {
+      (orchestrator as any).agentMapping = {
+        version: '1.1',
+        subagents: {
+          'threads-bot': {
+            model: 'openrouter/openai/gpt-4.1-mini',
+          },
+        },
+      };
+
+      const stage = { id: 'threads-stage', agentId: 'threads-bot' };
+      const result = (orchestrator as any).resolveAgentExecution(stage, mockContext);
+
+      expect(result.agentId).toBe('threads-bot');
+      expect(result.model).toBe('openrouter/openai/gpt-4.1-mini');
+      expect(result.source).toBe('config');
+    });
+
+    it('should resolve dynamic subagent with agentId alias', () => {
+      (orchestrator as any).agentMapping = {
+        version: '1.1',
+        subagents: {
+          'threads-bot': {
+            agentId: 'social-agent',
+            model: 'openrouter/openai/gpt-4.1-mini',
+          },
+        },
+      };
+
+      const stage = { id: 'threads-stage', agentId: 'threads-bot' };
+      const result = (orchestrator as any).resolveAgentExecution(stage, mockContext);
+
+      expect(result.agentId).toBe('social-agent');
+      expect(result.model).toBe('openrouter/openai/gpt-4.1-mini');
+      expect(result.source).toBe('config');
+    });
+
     it('should fallback to getModelForAgent if mapping has no model and no agentId override', () => {
       (orchestrator as any).agentMapping = {
         version: '1.0',

@@ -40,5 +40,20 @@ Hard safety rule:
 - `OPENCLAW_DATA_DIR` – path to runtime data directory (default: `./.openclaw`)
 - Other OpenClaw env vars as needed.
 
+## Dynamic Subagents / Models
+- Config file: `.openclaw/config/agent-mapping.json`
+- Preferred format is `subagents` keyed by workflow `stage.agentId`.
+- To add a new subagent (example `threads-bot`), just add:
+```json
+{
+  "subagents": {
+    "threads-bot": {
+      "model": "openrouter/openai/gpt-4.1-mini"
+    }
+  }
+}
+```
+- Then use `"agentId": "threads-bot"` in workflow stage. No code change required.
+
 ## Notes
 Runtime data is excluded from git. Keep `.openclaw/` in your workspace root or set `OPENCLAW_DATA_DIR` to an absolute path.

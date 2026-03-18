@@ -67,12 +67,21 @@ interface InFlightSession {
 
 // Agent mapping config for runtime resolution
 interface AgentMappingConfig {
-  version: string;
-  mappings: Array<{
+  version?: string;
+  mappings?: Array<{
     stageAgentId: string;  // original stage.agentId to match
     agentId?: string;      // resolved agentId (if different)
     model?: string;        // overridden model
   }>;
+  subagents?: Record<string, {
+    agentId?: string;
+    model?: string;
+    fallbackModel?: string;
+  }>;
+  defaults?: {
+    model?: string;
+    fallbackModel?: string;
+  };
 }
 
 export class Orchestrator {
@@ -130,7 +139,9 @@ export class Orchestrator {
       }
       const content = readFileSync(configPath, 'utf8');
       this.agentMapping = JSON.parse(content) as AgentMappingConfig;
-      this.logger.info(`[orchestrator] Loaded agent mapping config with ${this.agentMapping.mappings.length} mappings`);
+      const mappingCount = Array.isArray(this.agentMapping.mappings) ? this.agentMapping.mappings.length : 0;
+      const subagentCount = this.agentMapping.subagents ? Object.keys(this.agentMapping.subagents).length : 0;
+      this.logger.info(`[orchestrator] Loaded agent mapping config with ${mappingCount} mappings, ${subagentCount} subagents`);
     } catch (err) {
       this.logger.warn(`[orchestrator] Failed to load agent mapping config, using fallback: ${err instanceof Error ? err.message : String(err)}`);
       this.agentMapping = null;
@@ -145,29 +156,33 @@ export class Orchestrator {
     const originalAgentId = stage.agentId;
 
     // If no config loaded, fallback to legacy behavior
-    if (!this.agentMapping || !this.agentMapping.mappings) {
+    if (!this.agentMapping) {
       const model = this.getModelForAgent(originalAgentId);
       return { agentId: originalAgentId, model, source: 'fallback' };
     }
 
     try {
-      // Find mapping for this stage's agentId
-      const mapping = this.agentMapping.mappings.find(m => m.stageAgentId === originalAgentId);
+      // Legacy mappings (stageAgentId based)
+      const mapping = this.agentMapping.mappings?.find(m => m.stageAgentId === originalAgentId);
+      // Dynamic subagents (direct key by agent id in workflow)
+      const subagent = this.getSubagentConfig(originalAgentId);
 
-      if (!mapping) {
+      if (!mapping && !subagent) {
         // No mapping found, use original agentId with default model
         const model = this.getModelForAgent(originalAgentId);
         this.logger.info(`[orchestrator] No agent mapping for ${originalAgentId}, using fallback (agent=${originalAgentId}, model=${model})`);
         return { agentId: originalAgentId, model, source: 'fallback' };
       }
 
-      // Mapping found: use overridden agentId if provided, else keep original
-      const resolvedAgentId = mapping.agentId || originalAgentId;
+      // Prefer legacy mapping when both exist, keep backward compatibility.
+      const resolvedAgentId = mapping?.agentId || subagent?.agentId || originalAgentId;
 
       // Determine model: if mapping provides model, use it; else try getModelForAgent on resolvedAgentId; else fallback
       let resolvedModel: string | undefined;
-      if (mapping.model) {
+      if (mapping?.model) {
         resolvedModel = mapping.model;
+      } else if (subagent?.model) {
+        resolvedModel = subagent.model;
       } else {
         resolvedModel = this.getModelForAgent(resolvedAgentId);
       }
@@ -825,6 +840,13 @@ export class Orchestrator {
   }
 
   private getModelForAgent(agentId: string): string {
+    const dynamic = this.getAgentConfigById(agentId);
+    if (dynamic?.model) {
+      return dynamic.model;
+    }
+    if (this.agentMapping?.defaults?.model) {
+      return this.agentMapping.defaults.model;
+    }
     if (agentId === 'orchestrator-main') {
       return 'openrouter/stepfun/step-3.5-flash:free';
     }
@@ -832,11 +854,35 @@ export class Orchestrator {
   }
 
   private getFallbackModel(agentId: string): string | undefined {
+    const dynamic = this.getAgentConfigById(agentId);
+    if (dynamic?.fallbackModel) {
+      return dynamic.fallbackModel;
+    }
+    if (this.agentMapping?.defaults?.fallbackModel) {
+      return this.agentMapping.defaults.fallbackModel;
+    }
     // orchestrator-main must never fallback
     if (agentId === 'orchestrator-main') {
       return null;
     }
     return 'openrouter/deepseek/deepseek-coder-v2-lite-instruct:free';
+  }
+
+  private getSubagentConfig(agentId: string): { agentId?: string; model?: string; fallbackModel?: string } | undefined {
+    if (!this.agentMapping?.subagents) return undefined;
+    return this.agentMapping.subagents[agentId];
+  }
+
+  private getAgentConfigById(agentId: string): { agentId?: string; model?: string; fallbackModel?: string } | undefined {
+    const subagent = this.getSubagentConfig(agentId);
+    if (subagent) return subagent;
+
+    const mapping = this.agentMapping?.mappings?.find(m => m.stageAgentId === agentId || m.agentId === agentId);
+    if (!mapping) return undefined;
+    return {
+      agentId: mapping.agentId,
+      model: mapping.model,
+    };
   }
 
   private isRetryableError(err: any): boolean {

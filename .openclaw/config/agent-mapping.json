@@ -1,22 +1,35 @@
 {
-  "version": "1.0",
-  "description": "Agent mapping config for orchestrator runtime resolution",
-  "mappings": [
-    {
-      "stageAgentId": "logic-analyzer",
-      "agentId": "codex-logic",
+  "version": "1.1",
+  "description": "Dynamic subagent/model config. Add new key in subagents to use it directly in workflow stage.agentId.",
+  "defaults": {
+    "model": "openai-codex/gpt-5.3-codex",
+    "fallbackModel": "openrouter/deepseek/deepseek-coder-v2-lite-instruct:free"
+  },
+  "subagents": {
+    "orchestrator-main": {
+      "model": "openrouter/stepfun/step-3.5-flash:free"
+    },
+    "logic-agent": {
       "model": "openrouter/anthropic/claude-3.7-sonnet:thinking"
     },
-    {
-      "stageAgentId": "ui-builder",
-      "agentId": "codex-ui",
+    "ui-agent": {
       "model": "openrouter/deepseek/deepseek-coder-v2-lite-instruct:free"
     },
-    {
-      "stageAgentId": "security-review",
-      "agentId": "security-sentinel",
+    "safety-review-agent": {
       "model": "openrouter/mistralai/mistral-large:free"
     },
+    "test-agent": {
+      "model": "openai-codex/gpt-5.3-codex"
+    },
+    "social-post-agent": {
+      "agentId": "ui-agent",
+      "model": "openrouter/openai/gpt-4.1-mini"
+    },
+    "threads-bot": {
+      "model": "openrouter/openai/gpt-4.1-mini"
+    }
+  },
+  "mappings": [
     {
       "stageAgentId": "orchestrator-main",
       "model": "openrouter/stepfun/step-3.5-flash:free"

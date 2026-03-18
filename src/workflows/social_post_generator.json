@@ -1,0 +1,57 @@
+{
+  "id": "social_post_generator",
+  "name": "Social Post Generator",
+  "description": "Generate social media post content using a dedicated content agent.",
+  "version": "1.0.0",
+  "tags": ["content", "social", "marketing"],
+  "inputs": {
+    "required": ["topic"],
+    "optional": [
+      "platform",
+      "audience",
+      "tone",
+      "goal",
+      "language",
+      "length",
+      "cta",
+      "hashtags_count"
+    ],
+    "schema": {
+      "type": "object",
+      "properties": {
+        "topic": { "type": "string", "description": "Main topic of the post" },
+        "platform": { "type": "string", "default": "threads" },
+        "audience": { "type": "string", "default": "general" },
+        "tone": { "type": "string", "default": "friendly" },
+        "goal": { "type": "string", "default": "engagement" },
+        "language": { "type": "string", "default": "vi" },
+        "length": { "type": "string", "enum": ["short", "medium", "long"], "default": "medium" },
+        "cta": { "type": "string", "default": "comment your thoughts" },
+        "hashtags_count": { "type": "number", "minimum": 0, "maximum": 12, "default": 5 }
+      }
+    }
+  },
+  "stages": [
+    {
+      "id": "generate_social_post",
+      "agentId": "social-post-agent",
+      "task": "Create social media content for {{platform}} about: {{topic}}. Target audience: {{audience}}. Tone: {{tone}}. Goal: {{goal}}. Language: {{language}}. Length: {{length}}. CTA: {{cta}}. Include {{hashtags_count}} relevant hashtags. Return strict JSON with keys: title, caption, hashtags, hook, cta, variants (array of 3 strings).",
+      "dependsOn": [],
+      "parallel": false,
+      "timeout_seconds": 300,
+      "outputs": ["social_post"]
+    }
+  ],
+  "max_parallel": 1,
+  "timeout_minutes": 10,
+  "retry_policy": {
+    "max_retries": 2,
+    "backoff": "exponential",
+    "retry_on": ["timeout", "rate_limit", "model_error"]
+  },
+  "on_complete": {
+    "notify": true,
+    "persist_results": true,
+    "generate_trace": true
+  }
+}

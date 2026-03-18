@@ -17,10 +17,20 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/redis": "^6.0.0",
+    "fastify": "^5.8.2",
     "uuid": "^13.0.0",
     "ws": "^8.19.0"
   },
-  "keywords": ["openclaw", "orchestrator", "multi-agent", "swift", "workflow"],
+  "keywords": [
+    "openclaw",
+    "orchestrator",
+    "multi-agent",
+    "swift",
+    "workflow"
+  ],
   "author": "",
   "license": "MIT"
 }
