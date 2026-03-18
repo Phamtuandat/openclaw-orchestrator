@@ -32,6 +32,7 @@ memory/*.tmp
 # Local/private config
 .openclaw/openclaw-patched.json
 .openclaw/*.local.json
+.openclaw/config/
 openclaw-patched.json
 *.local.json
 .env
