@@ -1,15 +1,16 @@
 import { readdirSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { promises as fs } from 'fs';
-import { startWorkflowTrace, WorkflowTrace } from './workflow_tracer';
+import { startWorkflowTrace } from './workflow_tracer';
 import { orchestratorLogger } from './logger';
 import { FileIndex, getOrBuildFileIndex } from './file_index_builder';
 import { getAgentDispatcher } from './agent_dispatcher';
 import { DependencyGraphBuilder } from './dependency_graph_builder';
 import * as glob from 'glob';
-import { getWorkflowsDir, getArtifactsDir } from './paths';
+import { getWorkflowsDir, getArtifactsDir, getConfigDir } from './paths';
 import { Metrics } from './metrics';
 import { CircuitBreaker } from './circuit_breaker';
+import { WorkflowTrace } from './workflow_tracer';
 
 // Types
 interface WorkflowDefinition {
@@ -64,12 +65,23 @@ interface InFlightSession {
   heartbeat: number;
 }
 
+// Agent mapping config for runtime resolution
+interface AgentMappingConfig {
+  version: string;
+  mappings: Array<{
+    stageAgentId: string;  // original stage.agentId to match
+    agentId?: string;      // resolved agentId (if different)
+    model?: string;        // overridden model
+  }>;
+}
+
 export class Orchestrator {
   private logger = orchestratorLogger;
   private workflowsDir = getWorkflowsDir();
   private loadedWorkflows = new Map<string, WorkflowDefinition>();
   private metrics: Metrics;
   private breaker: CircuitBreaker;
+  private agentMapping: AgentMappingConfig | null = null;
 
   private fileIntents = new Map<string, FileIntent>();
   private inFlightSessions = new Map<string, InFlightSession>();
@@ -79,6 +91,7 @@ export class Orchestrator {
     this.metrics = Metrics.getInstance();
     this.breaker = new CircuitBreaker();
     this.loadAllWorkflows();
+    this.loadAgentMappingConfig();
   }
 
   private loadAllWorkflows(): void {
@@ -103,6 +116,73 @@ export class Orchestrator {
       }
     } catch (err) {
       this.logger.error(`Workflows scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private loadAgentMappingConfig(): void {
+    try {
+      const configDir = getConfigDir();
+      const configPath = join(configDir, 'agent-mapping.json');
+      if (!existsSync(configPath)) {
+        this.logger.info(`[orchestrator] Agent mapping config not found at ${configPath}, using defaults`);
+        this.agentMapping = null;
+        return;
+      }
+      const content = readFileSync(configPath, 'utf8');
+      this.agentMapping = JSON.parse(content) as AgentMappingConfig;
+      this.logger.info(`[orchestrator] Loaded agent mapping config with ${this.agentMapping.mappings.length} mappings`);
+    } catch (err) {
+      this.logger.warn(`[orchestrator] Failed to load agent mapping config, using fallback: ${err instanceof Error ? err.message : String(err)}`);
+      this.agentMapping = null;
+    }
+  }
+
+  /**
+   * Resolve agentId and model from config or fallback to legacy behavior.
+   * @returns { agentId, model, source } where source is 'config' or 'fallback'
+   */
+  private resolveAgentExecution(stage: any, context: WorkflowContext): { agentId: string; model?: string; source: 'config' | 'fallback' } {
+    const originalAgentId = stage.agentId;
+
+    // If no config loaded, fallback to legacy behavior
+    if (!this.agentMapping || !this.agentMapping.mappings) {
+      const model = this.getModelForAgent(originalAgentId);
+      return { agentId: originalAgentId, model, source: 'fallback' };
+    }
+
+    try {
+      // Find mapping for this stage's agentId
+      const mapping = this.agentMapping.mappings.find(m => m.stageAgentId === originalAgentId);
+
+      if (!mapping) {
+        // No mapping found, use original agentId with default model
+        const model = this.getModelForAgent(originalAgentId);
+        this.logger.info(`[orchestrator] No agent mapping for ${originalAgentId}, using fallback (agent=${originalAgentId}, model=${model})`);
+        return { agentId: originalAgentId, model, source: 'fallback' };
+      }
+
+      // Mapping found: use overridden agentId if provided, else keep original
+      const resolvedAgentId = mapping.agentId || originalAgentId;
+
+      // Determine model: if mapping provides model, use it; else try getModelForAgent on resolvedAgentId; else fallback
+      let resolvedModel: string | undefined;
+      if (mapping.model) {
+        resolvedModel = mapping.model;
+      } else {
+        resolvedModel = this.getModelForAgent(resolvedAgentId);
+      }
+
+      this.logger.info(`[orchestrator] Resolved stage ${stage.id}: originalAgent=${originalAgentId} → agent=${resolvedAgentId}, model=${resolvedModel} (source: config)`);
+
+      return {
+        agentId: resolvedAgentId,
+        model: resolvedModel,
+        source: 'config'
+      };
+    } catch (err) {
+      this.logger.error(`[orchestrator] Error resolving agent for stage ${stage.id}, using fallback: ${err}`);
+      const model = this.getModelForAgent(originalAgentId);
+      return { agentId: originalAgentId, model, source: 'fallback' };
     }
   }
 
@@ -320,8 +400,13 @@ export class Orchestrator {
             // Do NOT register file intents for conflict timeout (stage never executed)
           } else {
             // No conflict timeout; proceed normally
-            // Register file intents now (after conflicts resolved)
-            this.registerFileIntent(stage.id, stage.agentId, filesTouched);
+            // Resolve agent and model from config (or fallback)
+            const resolved = this.resolveAgentExecution(stage, context);
+            const resolvedAgentId = resolved.agentId;
+            const resolvedModel = resolved.model;
+
+            // Register file intents now (using resolved agentId)
+            this.registerFileIntent(stage.id, resolvedAgentId, filesTouched);
             // Emit reliability: conflictsWaited if there were conflicts and we successfully waited
             if (hasConflicts) {
               await this.metrics.emit({
@@ -330,12 +415,21 @@ export class Orchestrator {
                 traceId: context.traceId,
                 workflowId: context.workflowId,
                 stageId: stage.id,
-                agentId: stage.agentId,
+                agentId: resolvedAgentId,
                 status: 'incremented',
                 reliabilityFlags: { conflictsWaited: true },
               });
             }
-            stageResult = await this.executeStage(stage, context, tracer, deadline);
+            // Update stage.agentId temporarily for this execution to ensure consistent logging in executeStage
+            const originalAgentId = stage.agentId;
+            stage.agentId = resolvedAgentId;
+            stageResult = await this.executeStage(stage, context, tracer, deadline, resolvedModel);
+            // Restore original agentId to avoid mutating workflow definition
+            stage.agentId = originalAgentId;
+            // Override result.agentId với resolvedAgentId để tracking chính xác
+            if (stageResult) {
+              stageResult.agentId = resolvedAgentId;
+            }
             results.push(stageResult);
           }
         } finally {
@@ -377,7 +471,7 @@ export class Orchestrator {
         completedAt: finalTrace.completedAt!,
         durationMs: totalDuration,
         stages: aggregated.stages,
-        errors: finalTrace.errors,
+        errors: [],
         finalOutput: aggregated,
       };
 
@@ -552,12 +646,13 @@ export class Orchestrator {
     stage: any,
     context: WorkflowContext,
     tracer: any,
-    workflowDeadline: number
+    workflowDeadline: number,
+    resolvedModel?: string
   ): Promise<TaskResult> {
     const start = Date.now();
     let attempt = 0;
     const maxRetries = 2;
-    let usedModel = this.getModelForAgent(stage.agentId);
+    let usedModel = resolvedModel || this.getModelForAgent(stage.agentId);
     let fallbackUsed: string | undefined;
     const dispatcher = getAgentDispatcher(process.env.USE_REAL_AGENT === 'true');
 

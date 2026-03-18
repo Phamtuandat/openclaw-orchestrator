@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { orchestratorLogger } from './logger';
 import { mkdirSync, appendFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { getLogsDir } from './paths';
 
 export type WorkflowStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -97,8 +96,8 @@ export class WorkflowTracer {
     this.trace.completedAt = new Date().toISOString();
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.logger.workflow(this.trace.workflowId, `Workflow completed`, { traceId: this.trace.traceId, duration_ms: this.trace.durationMs });
+    this.saveToFile();
     const trace = this.trace;
-    this.saveToFile();  // Save before clearing trace
     this.trace = null;
     return trace;
   }
@@ -110,8 +109,8 @@ export class WorkflowTracer {
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.trace.errors.push(error);
     this.logger.workflow(this.trace.workflowId, `Workflow failed: ${error.message}`, { traceId: this.trace.traceId });
+    this.saveToFile();
     const trace = this.trace;
-    this.saveToFile();  // Save before clearing trace
     this.trace = null;
     return trace;
   }
@@ -122,8 +121,8 @@ export class WorkflowTracer {
     this.trace.completedAt = new Date().toISOString();
     if (this.trace.startedAt) this.trace.durationMs = new Date(this.trace.completedAt!).getTime() - new Date(this.trace.startedAt).getTime();
     this.logger.workflow(this.trace.workflowId, `Workflow cancelled`, { traceId: this.trace.traceId });
+    this.saveToFile();
     const trace = this.trace;
-    this.saveToFile();  // Save before clearing trace
     this.trace = null;
     return trace;
   }
@@ -135,7 +134,7 @@ export class WorkflowTracer {
   private saveToFile(): void {
     if (!this.trace) return;
     try {
-      const logsDir = join(getLogsDir(), 'traces');
+      const logsDir = join(process.cwd(), '.openclaw', 'logs', 'traces');
       if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
       const datePart = new Date().toISOString().split('T')[0];
       const filePath = join(logsDir, `${datePart}.jsonl`);

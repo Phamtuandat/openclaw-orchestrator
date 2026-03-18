@@ -1,6 +1,42 @@
-node_modules/
-.openclaw/
-.env
-*.log
+# OS / Editor
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node dependencies
+node_modules/
+.openclaw/node_modules/
+
+# Build outputs
+.openclaw/dist/
+.openclaw/index/
 dist/
+index/
+
+# Generated runtime data
+.openclaw/logs/
+.openclaw/artifacts/
+.openclaw/workspace-state.json
+.openclaw/output.log
+logs/
+artifacts/
+workspace-state.json
+output.log
+
+# Local runtime/cache
+.trash/
+memory/*.tmp
+
+# Local/private config
+.openclaw/openclaw-patched.json
+.openclaw/*.local.json
+openclaw-patched.json
+*.local.json
+.env
+*.local
+
+# Temporary
+*.tmp
+*.log

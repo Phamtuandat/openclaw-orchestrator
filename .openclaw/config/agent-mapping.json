@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "description": "Agent mapping config for orchestrator runtime resolution",
+  "mappings": [
+    {
+      "stageAgentId": "logic-analyzer",
+      "agentId": "codex-logic",
+      "model": "openrouter/anthropic/claude-3.7-sonnet:thinking"
+    },
+    {
+      "stageAgentId": "ui-builder",
+      "agentId": "codex-ui",
+      "model": "openrouter/deepseek/deepseek-coder-v2-lite-instruct:free"
+    },
+    {
+      "stageAgentId": "security-review",
+      "agentId": "security-sentinel",
+      "model": "openrouter/mistralai/mistral-large:free"
+    },
+    {
+      "stageAgentId": "orchestrator-main",
+      "model": "openrouter/stepfun/step-3.5-flash:free"
+    }
+  ]
+}

@@ -1,7 +1,14 @@
 {
+  "name": "openclaw-orchestrator",
+  "version": "2.0.0",
+  "description": "Intelligent workflow engine for coordinated multi-agent Swift development",
+  "main": "dist/index.js",
   "scripts": {
-    "build": "npx tsc",
-    "deploy:safe": "node scripts/deploy-safe.mjs"
+    "build": "tsc",
+    "postbuild": "cp -r src/workflows .openclaw/",
+    "start": "node .openclaw/dist/index.js",
+    "dashboard": "node .openclaw/dist/dashboard.js",
+    "test": "node .openclaw/dist/index.js crash_hunter project_path=\"/Volumes/Home_EX/Projects/Xcode/Projects/AnkiClone/Decky/Decky\""
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",
@@ -12,5 +19,8 @@
   "dependencies": {
     "uuid": "^13.0.0",
     "ws": "^8.19.0"
-  }
+  },
+  "keywords": ["openclaw", "orchestrator", "multi-agent", "swift", "workflow"],
+  "author": "",
+  "license": "MIT"
 }

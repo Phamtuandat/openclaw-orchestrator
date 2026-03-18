@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "moduleResolution": "node"
   },
-  "include": ["src/core/**/*", "src/index.ts", "src/dashboard.ts", "schemas/**/*"],
+  "include": ["src/core/**/*", "src/index.ts", "src/dashboard.ts", "src/workflows/**/*", "schemas/**/*"],
   "exclude": ["node_modules", "dist", "logs", "index", ".openclaw"]
 }

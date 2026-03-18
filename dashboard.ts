@@ -2,11 +2,10 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join, relative, parse } from 'path';
 import { orchestratorLogger } from './core/logger';
-import { getDataDir } from './core/paths';
-import { Metrics } from './core/metrics';
 
 const PORT = 3001;
-const OPENCLAW_DIR = getDataDir();
+const ROOT_DIR = process.cwd();
+const OPENCLAW_DIR = join(ROOT_DIR, '.openclaw');
 
 interface TraceInfo {
   traceId: string;
@@ -18,6 +17,28 @@ interface TraceInfo {
 }
 
 // Simple router
+function findTraceFile(traceId: string): string | null {
+  const tracesDir = join(OPENCLAW_DIR, 'logs', 'traces');
+  if (!existsSync(tracesDir)) return null;
+  const files = readdirSync(tracesDir).filter(f => f.endsWith('.jsonl'));
+  for (const file of files) {
+    const filePath = join(tracesDir, file);
+    try {
+      const content = readFileSync(filePath, 'utf8');
+      const lines = content.trim().split('\n').filter(l => l);
+      for (const line of lines) {
+        const trace = JSON.parse(line);
+        if (trace.traceId === traceId) {
+          return filePath;
+        }
+      }
+    } catch (err) {
+      // ignore and continue
+    }
+  }
+  return null;
+}
+
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`);
   const pathname = url.pathname;
@@ -49,8 +70,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       if (traceId && stageId) {
         serveArtifact(res, traceId, stageId);
       }
-    } else if (pathname === '/api/metrics/summary') {
-      serveMetricsSummary(req, res);
     } else if (pathname.startsWith('/api/logs/')) {
       const parts = pathname.split('/');
       const component = parts[2];
@@ -120,17 +139,21 @@ function serveWorkflowsPage(res: ServerResponse): void {
 }
 
 function serveTraceDetailPage(res: ServerResponse, traceId: string): void {
-  const tracePath = join(OPENCLAW_DIR, 'logs', 'traces', `${traceId}.jsonl`);
+  const filePath = findTraceFile(traceId);
   const artifactsDir = join(OPENCLAW_DIR, 'artifacts', traceId);
   const hasArtifacts = existsSync(artifactsDir);
 
   let traceData: any = null;
-  if (existsSync(tracePath)) {
+  if (filePath) {
     try {
-      const content = readFileSync(tracePath, 'utf8');
+      const content = readFileSync(filePath, 'utf8');
       const lines = content.trim().split('\n').filter(l => l);
-      if (lines.length > 0) {
-        traceData = JSON.parse(lines[lines.length - 1]);
+      for (const line of lines) {
+        const t = JSON.parse(line);
+        if (t.traceId === traceId) {
+          traceData = t;
+          break;
+        }
       }
     } catch (err) {
       traceData = null;
@@ -261,15 +284,16 @@ function serveJson(res: ServerResponse, data: any): void {
 }
 
 function serveTraceJson(res: ServerResponse, traceId: string): void {
-  const tracePath = join(OPENCLAW_DIR, 'logs', 'traces', `${traceId}.jsonl`);
-  if (!existsSync(tracePath)) {
+  const filePath = findTraceFile(traceId);
+  if (!filePath) {
     res.statusCode = 404;
     res.end('Trace not found');
     return;
   }
-  const content = readFileSync(tracePath, 'utf8');
-  const traces = content.trim().split('\n').filter(l => l).map(l => JSON.parse(l));
-  serveJson(res, traces);
+  const content = readFileSync(filePath, 'utf8');
+  const allTraces = content.trim().split('\n').filter(l => l).map(l => JSON.parse(l));
+  const filtered = allTraces.filter((t: any) => t.traceId === traceId);
+  serveJson(res, filtered);
 }
 
 function serveArtifact(res: ServerResponse, traceId: string, stageId: string): void {
@@ -293,36 +317,6 @@ function serveLogs(res: ServerResponse, component: string, date: string): void {
   const content = readFileSync(logFile, 'utf8');
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.end(content);
-}
-
-function serveMetricsSummary(req: IncomingMessage, res: ServerResponse): void {
-  try {
-    const metrics = Metrics.getInstance();
-    const summary = metrics.safeReadSummary();
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(summary, null, 2));
-  } catch (err) {
-    // Return empty valid summary
-    const empty: any = {
-      scope: 'all-time',
-      generatedAt: new Date().toISOString(),
-      workflows: { started: 0, completed: 0, failed: 0, successRate: 0, avgDurationMs: 0 },
-      stages: { completed: 0, failed: 0, avgLatencyMs: 0, p95LatencyMs: 0 },
-      agents: {},
-      reliability: {
-        dispatcherErrors: 0,
-        timeouts: 0,
-        fallbacksUsed: 0,
-        retries: 0,
-        conflictsWaited: 0,
-        conflictTimeouts: 0,
-        circuitOpenCount: 0,
-        stuckStageTimeouts: 0,
-      },
-    };
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(empty, null, 2));
-  }
 }
 
 // Start server
